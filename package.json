@@ -1,0 +1,15 @@
+{
+  "name": "live2d-mcp",
+  "private": true,
+  "workspaces": [
+    "mcp-server",
+    "renderer"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w mcp-server\" \"npm run dev -w renderer\"",
+    "build": "npm run build -w mcp-server && npm run build -w renderer"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

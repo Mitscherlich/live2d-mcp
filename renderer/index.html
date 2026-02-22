@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live2D MCP Renderer</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: #1a1a2e;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #e0e0e0;
+        overflow: hidden;
+      }
+
+      #canvas-container {
+        position: relative;
+        width: 600px;
+        height: 600px;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      #status-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        padding: 8px 16px;
+        background: rgba(0, 0, 0, 0.7);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-size: 13px;
+        z-index: 100;
+      }
+
+      .status-indicator {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #ff4444;
+        transition: background 0.3s;
+      }
+
+      .dot.connected {
+        background: #44ff88;
+      }
+
+      #current-state {
+        margin-left: auto;
+        opacity: 0.7;
+        font-size: 12px;
+      }
+
+      #model-load-error {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(200, 50, 50, 0.9);
+        padding: 20px 30px;
+        border-radius: 8px;
+        max-width: 500px;
+        text-align: center;
+        display: none;
+        z-index: 200;
+      }
+
+      #model-load-error h3 {
+        margin-bottom: 10px;
+      }
+
+      #model-load-error a {
+        color: #88ccff;
+      }
+
+      /* 调试面板 - 底部抽屉 */
+      #debug-panel {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(10, 10, 20, 0.92);
+        border-top: 1px solid rgba(255,255,255,0.1);
+        display: flex;
+        flex-direction: column;
+        font-size: 12px;
+        z-index: 50;
+        transform: translateY(calc(100% - 32px));
+        transition: transform 0.25s ease;
+      }
+
+      #debug-panel.expanded {
+        transform: translateY(0);
+      }
+
+      .debug-header {
+        height: 32px;
+        padding: 0 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        cursor: pointer;
+        flex-shrink: 0;
+        user-select: none;
+      }
+
+      .debug-header-title {
+        font-weight: 600;
+        font-size: 12px;
+        color: #aaa;
+        letter-spacing: 0.04em;
+      }
+
+      #debug-toggle-btn {
+        background: none;
+        border: none;
+        color: #666;
+        cursor: pointer;
+        font-size: 11px;
+        padding: 2px 4px;
+        transition: color 0.15s;
+      }
+
+      #debug-toggle-btn:hover { color: #ccc; }
+
+      .debug-body {
+        display: flex;
+        flex-direction: row;
+        gap: 24px;
+        padding: 12px 16px;
+        overflow-x: auto;
+        align-items: flex-start;
+      }
+
+      .debug-section {
+        flex-shrink: 0;
+      }
+
+      .debug-section h4 {
+        font-size: 10px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 7px;
+      }
+
+      #debug-motions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        max-width: 480px;
+      }
+
+      .motion-btn {
+        padding: 4px 10px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 4px;
+        color: #ccc;
+        cursor: pointer;
+        font-size: 11px;
+        white-space: nowrap;
+        transition: background 0.15s;
+      }
+
+      .motion-btn:hover { background: rgba(100,180,255,0.15); border-color: rgba(100,180,255,0.4); }
+      .motion-btn.active { background: rgba(100,180,255,0.25); border-color: #64b4ff; color: #fff; }
+
+      .debug-divider {
+        width: 1px;
+        align-self: stretch;
+        background: rgba(255,255,255,0.07);
+        flex-shrink: 0;
+      }
+
+      .look-at-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .look-at-row label {
+        width: 12px;
+        color: #999;
+        flex-shrink: 0;
+        font-size: 11px;
+      }
+
+      .look-at-row input[type=range] {
+        width: 120px;
+        accent-color: #64b4ff;
+        cursor: pointer;
+      }
+
+      .look-at-row span {
+        width: 32px;
+        text-align: right;
+        color: #aaa;
+        font-size: 11px;
+      }
+
+      .look-at-row input[type=range]:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+      }
+
+      .mouse-follow-label {
+        font-size: 11px;
+        font-weight: normal;
+        color: #666;
+        cursor: pointer;
+        letter-spacing: 0;
+        display: block;
+        margin-top: 4px;
+      }
+
+      .mouse-follow-label:has(input:checked) { color: #64b4ff; }
+
+      .debug-reset-btn {
+        padding: 6px 16px;
+        background: rgba(255,80,80,0.1);
+        border: 1px solid rgba(255,80,80,0.25);
+        border-radius: 4px;
+        color: #ff8888;
+        cursor: pointer;
+        font-size: 11px;
+        transition: background 0.15s;
+        white-space: nowrap;
+      }
+
+      .debug-reset-btn:hover { background: rgba(255,80,80,0.22); }
+    </style>
+    <!-- Live2D Cubism Core（需手动下载后放到 public/ 目录） -->
+    <!-- 从 https://github.com/Live2D/CubismWebSamples 下载 Core 文件 -->
+    <script src="/live2dcubismcore.min.js"></script>
+  </head>
+  <body>
+    <div id="status-bar">
+      <div class="status-indicator">
+        <div class="dot" id="ws-dot"></div>
+        <span id="ws-status">WebSocket 未连接</span>
+      </div>
+      <div class="status-indicator">
+        <div class="dot" id="model-dot"></div>
+        <span id="model-status">模型未加载</span>
+      </div>
+      <div id="current-state">表情: - | 动作: -</div>
+    </div>
+
+    <div id="canvas-container">
+      <canvas id="live2d-canvas"></canvas>
+    </div>
+
+    <!-- 调试面板（底部抽屉，默认折叠） -->
+    <div id="debug-panel">
+      <div class="debug-header">
+        <span class="debug-header-title">调试面板</span>
+        <button id="debug-toggle-btn">▲ 展开</button>
+      </div>
+      <div class="debug-body">
+        <div class="debug-section">
+          <h4>动作</h4>
+          <div id="debug-motions"></div>
+        </div>
+        <div class="debug-divider"></div>
+        <div class="debug-section">
+          <h4>视线</h4>
+          <div class="look-at-row">
+            <label>X</label>
+            <input type="range" id="look-x" min="-1" max="1" step="0.05" value="0">
+            <span id="look-x-val">0.00</span>
+          </div>
+          <div class="look-at-row">
+            <label>Y</label>
+            <input type="range" id="look-y" min="-1" max="1" step="0.05" value="0">
+            <span id="look-y-val">0.00</span>
+          </div>
+          <label class="mouse-follow-label"><input type="checkbox" id="mouse-follow" checked> 跟随鼠标</label>
+        </div>
+        <div class="debug-divider"></div>
+        <div class="debug-section">
+          <button class="debug-reset-btn" id="debug-reset">重置</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="model-load-error">
+      <h3>模型加载失败</h3>
+      <p>请确认已将 Hiyori 模型文件放置在 <code>public/model/HiyoriPro/</code> 目录，<br/>
+      并将 <code>live2dcubismcore.min.js</code> 放置在 <code>public/</code> 目录。</p>
+      <p style="margin-top:10px">
+        模型下载：<a href="https://www.live2d.com/en/download/sample-data/" target="_blank">Live2D 官方示例</a>
+      </p>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
