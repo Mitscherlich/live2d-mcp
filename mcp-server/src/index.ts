@@ -7,6 +7,7 @@
  *   node dist/index.js           # 默认 HTTP 模式
  */
 
+import 'dotenv/config'
 import { runStdio, runHttp } from './mcp-server.js'
 
 const args = process.argv.slice(2)

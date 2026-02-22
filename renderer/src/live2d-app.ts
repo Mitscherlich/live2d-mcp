@@ -317,12 +317,88 @@ export class Live2DApp {
   }
 
   // ========== TTS + 口型同步功能 ==========
-  
+
   private speakingAudio: HTMLAudioElement | null = null
   private lipSyncInterval: number | null = null
   private lipSyncRaf: number | null = null
   private audioContext: AudioContext | null = null
   private isSpeaking = false
+
+  // 流式播放队列
+  private audioQueue: Array<{ audio: string; lipSyncData: Array<{ time: number; value: number }>; durationMs: number }> = []
+  private isPlayingQueue = false
+
+  /**
+   * 流式说话 - 初始化音频队列，准备接收 audioChunk
+   */
+  startSpeak(): boolean {
+    if (!this.model) return false
+    this.stopSpeaking()
+    this.audioQueue = []
+    this.isPlayingQueue = false
+    return true
+  }
+
+  /**
+   * 追加一段音频到播放队列，若队列空闲则立即开始播放
+   */
+  appendChunk(audio: string, lipSyncData: Array<{ time: number; value: number }>, durationMs = 2000): boolean {
+    if (!this.model) return false
+    this.audioQueue.push({ audio, lipSyncData, durationMs })
+    if (!this.isPlayingQueue) {
+      this.playNextInQueue()
+    }
+    return true
+  }
+
+  /**
+   * 标记流式说话结束（所有 chunk 已发送）
+   */
+  endSpeak(): boolean {
+    return true
+  }
+
+  /**
+   * 播放队列中的下一段音频
+   */
+  private playNextInQueue(): void {
+    // 取消上一段的口型 RAF
+    if (this.lipSyncRaf !== null) {
+      cancelAnimationFrame(this.lipSyncRaf)
+      this.lipSyncRaf = null
+    }
+
+    if (this.audioQueue.length === 0) {
+      this.isPlayingQueue = false
+      this.isSpeaking = false
+      this.setParameter('ParamMouthOpenY', 0)
+      return
+    }
+
+    this.isPlayingQueue = true
+    const { audio, lipSyncData, durationMs } = this.audioQueue.shift()!
+    const audioEl = new Audio(`data:audio/mpeg;base64,${audio}`)
+    this.speakingAudio = audioEl
+
+    audioEl.onplay = () => {
+      this.isSpeaking = true
+      if (lipSyncData && lipSyncData.length > 0) {
+        this.playLipSyncData(lipSyncData)
+      } else {
+        // 用服务端传来的时长估算，比 audioEl.duration 更可靠
+        this.startLipSyncAnimationWithDuration(durationMs)
+      }
+    }
+
+    audioEl.onended = () => {
+      this.playNextInQueue()
+    }
+
+    audioEl.play().catch((e) => {
+      console.error('[Live2D] queue play blocked:', e)
+      this.playNextInQueue()
+    })
+  }
 
   /**
    * 仅启动口型动画 - 用于配合外部 TTS
@@ -337,9 +413,10 @@ export class Live2DApp {
       // 设置表情
       this.setExpression(emotion)
 
-      // 启动口型动画
+      // 启动口型动画，到期后停止说话状态
       this.isSpeaking = true
       this.startLipSyncAnimationWithDuration(duration)
+      setTimeout(() => { if (this.isSpeaking && !this.isPlayingQueue) this.stopSpeaking() }, duration + 100)
 
       console.log('[Live2D] Lip sync only started, duration:', duration, 'ms')
       return true
@@ -364,7 +441,10 @@ export class Live2DApp {
       const elapsed = Date.now() - startTime
 
       if (elapsed >= durationMs) {
-        this.stopSpeaking()
+        // 只停止口型动画，不清空播放队列（队列由 audio.onended 驱动）
+        clearInterval(this.lipSyncInterval!)
+        this.lipSyncInterval = null
+        this.setParameter('ParamMouthOpenY', 0)
         return
       }
 
@@ -396,7 +476,7 @@ export class Live2DApp {
 
       // 播放音频，口型优先用时间轴，无时间轴则用音量分析
       if (audioUrl || audioBase64) {
-        const audio = new Audio(audioBase64 ? `data:audio/mp3;base64,${audioBase64}` : audioUrl)
+        const audio = new Audio(audioBase64 ? `data:audio/mpeg;base64,${audioBase64}` : audioUrl)
         audio.crossOrigin = 'anonymous'
         this.speakingAudio = audio
 
@@ -413,7 +493,9 @@ export class Live2DApp {
           this.stopSpeaking()
         }
 
-        audio.play()
+        audio.play().catch((e) => {
+          console.error('[Live2D] audio.play() blocked:', e)
+        })
         return true
       }
 
@@ -472,6 +554,10 @@ export class Live2DApp {
    * 停止说话
    */
   stopSpeaking(): void {
+    // 清空队列
+    this.audioQueue = []
+    this.isPlayingQueue = false
+
     // 停止音频
     if (this.speakingAudio) {
       this.speakingAudio.pause()

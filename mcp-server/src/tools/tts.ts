@@ -10,6 +10,15 @@ import { sendCommand, isRendererConnected } from '../ws-bridge.js'
 const TENCENT_SECRET_ID = process.env.TENCENT_SECRET_ID || ''
 const TENCENT_SECRET_KEY = process.env.TENCENT_SECRET_KEY || ''
 
+// 将长文本按句子切分，减少首句延迟
+function splitSentences(text: string): string[] {
+  const parts = text
+    .split(/(?<=[。！？\n；])|(?<=\.(?!\d))|(?<=!)|(?<=\?)/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  return parts.length > 0 ? parts : [text]
+}
+
 // 字级时间戳 → lipSyncData（每个字张嘴，停顿闭嘴）
 function subtitlesToLipSync(
   subtitles: Array<{ Text: string; BeginTime: number; EndTime: number }>
@@ -71,6 +80,7 @@ async function speakWithTencentTTS(
       ModelType: 1,
       VoiceType: voiceType,
       Speed: tencentSpeed,
+      Codec: 'mp3',   // 返回 MP3，浏览器可直接播放；默认为 wav
       EnableSubtitle: true,
     }
 
@@ -185,24 +195,40 @@ export function registerTTSTools(server: McpServer): void {
         }
       }
 
-      const result = await speakWithTencentTTS(text, emotion, speed, voice_type)
+      const sentences = splitSentences(text)
 
-      if (!result.success || !result.audioBase64) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ success: false, error: result.error }),
-            },
-          ],
+      // 所有句子并行发起 TTS 请求，减少总等待时间
+      const ttsPromises = sentences.map((s) =>
+        speakWithTencentTTS(s, emotion, speed, voice_type)
+      )
+
+      // 立即切换表情 + 初始化流式播放（字幕在 startSpeak 里展示）
+      await sendCommand('setExpression', { expression: emotion })
+      await sendCommand('startSpeak', { text })
+
+      // 按顺序等待每句合成，完成即推送给 renderer
+      let totalDuration = 0
+      let firstChunkSent = false
+      const startMs = Date.now()
+
+      for (const ttsPromise of ttsPromises) {
+        const result = await ttsPromise
+        if (!result.success || !result.audioBase64) continue
+
+        await sendCommand('audioChunk', {
+          audio: result.audioBase64,
+          lipSyncData: result.lipSyncData ?? [],
+          durationMs: result.duration ?? 2000,
+        })
+
+        if (!firstChunkSent) {
+          firstChunkSent = true
+          console.error(`[TTS] First chunk sent after ${Date.now() - startMs}ms`)
         }
+        totalDuration += result.duration ?? 0
       }
 
-      await sendCommand('setExpression', { expression: emotion })
-      await sendCommand('lipSync', {
-        audioBase64: result.audioBase64,
-        lipSyncData: result.lipSyncData,
-      })
+      await sendCommand('endSpeak')
 
       return {
         content: [
@@ -213,8 +239,9 @@ export function registerTTSTools(server: McpServer): void {
               text: text.slice(0, 50) + (text.length > 50 ? '...' : ''),
               emotion,
               speed,
-              engine: 'Tencent TTS',
-              estimatedDurationMs: result.duration,
+              sentences: sentences.length,
+              engine: 'Tencent TTS (streaming)',
+              estimatedDurationMs: totalDuration,
             }),
           },
         ],
@@ -242,7 +269,7 @@ export function registerTTSTools(server: McpServer): void {
       const duration = duration_ms || (text.length / 5) * 1000 / speed
 
       await sendCommand('setExpression', { expression: emotion })
-      await sendCommand('startLipSyncOnly', { duration, emotion })
+      await sendCommand('startLipSyncOnly', { duration, emotion, text })
 
       return {
         content: [
@@ -268,8 +295,9 @@ export function registerTTSTools(server: McpServer): void {
       audio_url: z.string().optional(),
       audio_base64: z.string().optional(),
       lip_sync_data: z.array(z.object({ time: z.number(), value: z.number() })).optional(),
+      text: z.string().optional().describe('同步展示的字幕文本（可选）'),
     },
-    async ({ audio_url, audio_base64, lip_sync_data }) => {
+    async ({ audio_url, audio_base64, lip_sync_data, text }) => {
       if (!isRendererConnected()) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ success: false, error: '渲染器未连接' }) }],
@@ -280,6 +308,7 @@ export function registerTTSTools(server: McpServer): void {
         audioUrl: audio_url,
         audioBase64: audio_base64,
         lipSyncData: lip_sync_data,
+        text,
       })
 
       return {

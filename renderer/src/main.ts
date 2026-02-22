@@ -242,7 +242,26 @@ function initDebugPanel(app: Live2DApp) {
   })
 }
 
+// 解锁浏览器 autoplay 限制：首次用户交互时播放一段静音音频
+function setupAudioUnlock() {
+  const unlock = () => {
+    const ctx = new AudioContext()
+    const buf = ctx.createBuffer(1, 1, 22050)
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(ctx.destination)
+    src.start(0)
+    ctx.resume().then(() => ctx.close())
+    document.removeEventListener('pointerdown', unlock)
+    document.removeEventListener('keydown', unlock)
+  }
+  document.addEventListener('pointerdown', unlock)
+  document.addEventListener('keydown', unlock)
+}
+
 async function main() {
+  setupAudioUnlock()
+
   // 初始化 Live2D
   const app = new Live2DApp()
 
