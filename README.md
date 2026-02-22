@@ -70,25 +70,20 @@ cd renderer && npm run dev
 | `set_parameter` | 精细控制参数（如 ParamMouthOpenY） |
 | `reset` | 重置为默认姿态 |
 
-## 如何配置 mcp
+## 对接 Claude Desktop（stdio 模式）
 
-发送这段提示词给你的 Claude Code / OpenClaw:
-
-```md
-帮我添加 live2d mcp，这是一个运行在本地的 http sse mcp 服务，参考配置如下：
+在 `~/Library/Application Support/Claude/claude_desktop_config.json` 中添加：
 
 ```json
 {
   "mcpServers": {
     "live2d": {
-      "type": "http",
-      "url": "http://localhost:3000/mcp"
+      "command": "node",
+      "args": ["/绝对路径/live2d-mcp/mcp-server/dist/index.js", "--stdio"],
+      "env": {}
     }
   }
 }
-```
-
-完成后测试这个 mcp 并向我报告。
 ```
 
 需要先构建：`cd mcp-server && npm run build`

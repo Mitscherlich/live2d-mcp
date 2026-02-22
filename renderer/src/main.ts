@@ -19,12 +19,15 @@ const currentStateEl = document.getElementById('current-state') as HTMLDivElemen
 const debugPanel = document.getElementById('debug-panel') as HTMLDivElement
 const debugHeader = debugPanel.querySelector('.debug-header') as HTMLDivElement
 const debugToggleBtn = document.getElementById('debug-toggle-btn') as HTMLButtonElement
+const debugExpressionsEl = document.getElementById('debug-expressions') as HTMLDivElement
 const debugMotionsEl = document.getElementById('debug-motions') as HTMLDivElement
 const lookXInput = document.getElementById('look-x') as HTMLInputElement
 const lookXVal = document.getElementById('look-x-val') as HTMLSpanElement
 const lookYInput = document.getElementById('look-y') as HTMLInputElement
 const lookYVal = document.getElementById('look-y-val') as HTMLSpanElement
 const debugResetBtn = document.getElementById('debug-reset') as HTMLButtonElement
+const debugClickLog = document.getElementById('debug-click-log') as HTMLDivElement
+const hitareaToggle = document.getElementById('hitarea-toggle') as HTMLInputElement
 const mouseFollowCheckbox = document.getElementById('mouse-follow') as HTMLInputElement
 
 let currentExpression = '-'
@@ -50,6 +53,64 @@ function motionLabel(group: string, index?: number): string {
 
 function updateStateBar() {
   currentStateEl.textContent = `表情: ${currentExpression} | 动作: ${currentMotion}`
+}
+
+// 点击区域 → 动作分组映射
+const HIT_AREA_MOTIONS: Record<string, string> = {
+  Body: 'Tap@Body',
+}
+
+function appendClickLog(px: number, py: number, hitAreas: string[], action: string | null) {
+  const entry = document.createElement('div')
+  entry.className = 'click-log-entry'
+  const coord = `(${Math.round(px)}, ${Math.round(py)})`
+  if (action) {
+    entry.innerHTML =
+      `${coord} hit: <span class="log-hit">[${hitAreas.join(', ')}]</span>` +
+      ` → <span class="log-action">${action}</span>`
+  } else {
+    entry.innerHTML =
+      `${coord} <span class="log-miss">miss (no hit area)</span>`
+  }
+  debugClickLog.appendChild(entry)
+  // 最多保留 30 条
+  while (debugClickLog.children.length > 30) {
+    debugClickLog.firstElementChild?.remove()
+  }
+  // 自动滚到最新
+  const logPane = document.getElementById('pane-log')
+  if (logPane) logPane.scrollTop = logPane.scrollHeight
+}
+
+function initClickInteraction(app: Live2DApp) {
+  canvas.addEventListener('pointerdown', (e: PointerEvent) => {
+    const rect = canvas.getBoundingClientRect()
+    // 转换为 canvas 物理像素坐标（考虑 devicePixelRatio 缩放）
+    const scaleX = canvas.width / rect.width
+    const scaleY = canvas.height / rect.height
+    const x = (e.clientX - rect.left) * scaleX
+    const y = (e.clientY - rect.top) * scaleY
+
+    const hitAreas = app.hitTest(x, y)
+
+    if (hitAreas.length === 0) {
+      appendClickLog(x, y, [], null)
+      return
+    }
+
+    let group = 'Tap'
+    for (const area of hitAreas) {
+      if (HIT_AREA_MOTIONS[area]) {
+        group = HIT_AREA_MOTIONS[area]
+        break
+      }
+    }
+
+    app.playMotion(group, undefined, 2)
+    currentMotion = group
+    updateStateBar()
+    appendClickLog(x, y, hitAreas, group)
+  })
 }
 
 function initMouseFollow(app: Live2DApp) {
@@ -80,24 +141,57 @@ function initMouseFollow(app: Live2DApp) {
 }
 
 function initDebugPanel(app: Live2DApp) {
-  // 收起/展开（点击 header 或按钮均可触发）
-  function toggleDebugPanel(e: Event) {
-    // 避免 checkbox、range 等子元素冒泡触发
-    if ((e.target as HTMLElement).closest('input, button:not(#debug-toggle-btn)')) return
-    const expanded = debugPanel.classList.toggle('expanded')
-    debugToggleBtn.textContent = expanded ? '▼ 收起' : '▲ 展开'
-  }
-  debugHeader.addEventListener('click', toggleDebugPanel)
-  debugToggleBtn.addEventListener('click', (e) => {
-    e.stopPropagation()
+  // 展开/收起：仅 toggle 按钮触发
+  debugToggleBtn.addEventListener('click', () => {
     const expanded = debugPanel.classList.toggle('expanded')
     debugToggleBtn.textContent = expanded ? '▼ 收起' : '▲ 展开'
   })
 
-  // 动态生成动作按钮
+  // Tab 切换
+  const tabs = debugHeader.querySelectorAll<HTMLButtonElement>('.debug-tab')
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      tabs.forEach((t) => t.classList.remove('active'))
+      tab.classList.add('active')
+      const paneId = `pane-${tab.dataset.tab}`
+      debugPanel.querySelectorAll<HTMLDivElement>('.debug-pane').forEach((p) => {
+        p.classList.toggle('active', p.id === paneId)
+      })
+      // 切换 tab 时若面板未展开则自动展开
+      if (!debugPanel.classList.contains('expanded')) {
+        debugPanel.classList.add('expanded')
+        debugToggleBtn.textContent = '▼ 收起'
+      }
+    })
+  })
+
   const info = app.getModelInfo()
+  let activeExprBtn: HTMLButtonElement | null = null
   let activeBtn: HTMLButtonElement | null = null
 
+  // 动态生成表情按钮
+  if (info && info.expressions.length > 0) {
+    for (const name of info.expressions) {
+      const btn = document.createElement('button')
+      btn.className = 'motion-btn'
+      btn.textContent = name
+      btn.addEventListener('click', () => {
+        app.setExpression(name)
+        currentExpression = name
+        updateStateBar()
+        activeExprBtn?.classList.remove('active')
+        btn.classList.add('active')
+        activeExprBtn = btn
+      })
+      debugExpressionsEl.appendChild(btn)
+    }
+  } else {
+    debugExpressionsEl.textContent = '无可用表情'
+    debugExpressionsEl.style.color = '#555'
+    debugExpressionsEl.style.fontSize = '11px'
+  }
+
+  // 动态生成动作按钮
   if (info) {
     for (const [group, count] of Object.entries(info.motionGroups)) {
       for (let i = 0; i < count; i++) {
@@ -138,6 +232,8 @@ function initDebugPanel(app: Live2DApp) {
     lookXVal.textContent = '0.00'
     lookYVal.textContent = '0.00'
     if (!mouseFollowCheckbox.checked) app.lookAt(0, 0)
+    activeExprBtn?.classList.remove('active')
+    activeExprBtn = null
     activeBtn?.classList.remove('active')
     activeBtn = null
     currentExpression = '-'
@@ -157,6 +253,11 @@ async function main() {
     console.log('[Main] Live2D app initialized')
     initDebugPanel(app)
     initMouseFollow(app)
+    initClickInteraction(app)
+
+    hitareaToggle.addEventListener('change', () => {
+      app.showHitAreaOverlay(hitareaToggle.checked)
+    })
   } catch (e) {
     modelStatus.textContent = '模型加载失败'
     console.error('[Main] Failed to initialize Live2D:', e)

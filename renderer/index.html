@@ -113,29 +113,54 @@
         transform: translateY(0);
       }
 
+      /* header：左侧 tabs + 右侧操作区 */
       .debug-header {
         height: 32px;
-        padding: 0 14px;
+        padding: 0 10px 0 0;
         display: flex;
-        align-items: center;
-        justify-content: space-between;
+        align-items: stretch;
         border-bottom: 1px solid rgba(255,255,255,0.08);
-        cursor: pointer;
         flex-shrink: 0;
         user-select: none;
       }
 
-      .debug-header-title {
-        font-weight: 600;
+      .debug-tabs {
+        display: flex;
+        align-items: stretch;
+        flex: 1;
+      }
+
+      .debug-tab {
+        padding: 0 14px;
+        background: none;
+        border: none;
+        border-right: 1px solid rgba(255,255,255,0.06);
+        border-bottom: 2px solid transparent;
+        color: #555;
+        cursor: pointer;
         font-size: 12px;
-        color: #aaa;
-        letter-spacing: 0.04em;
+        transition: color 0.15s, border-bottom-color 0.15s;
+        white-space: nowrap;
+      }
+
+      .debug-tab:hover { color: #aaa; }
+
+      .debug-tab.active {
+        color: #e0e0e0;
+        border-bottom-color: #64b4ff;
+      }
+
+      .debug-header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-left: 10px;
       }
 
       #debug-toggle-btn {
         background: none;
         border: none;
-        color: #666;
+        color: #555;
         cursor: pointer;
         font-size: 11px;
         padding: 2px 4px;
@@ -144,32 +169,30 @@
 
       #debug-toggle-btn:hover { color: #ccc; }
 
+      /* 内容区 */
       .debug-body {
-        display: flex;
-        flex-direction: row;
-        gap: 24px;
-        padding: 12px 16px;
-        overflow-x: auto;
-        align-items: flex-start;
+        height: 110px;
+        position: relative;
+        overflow: hidden;
       }
 
-      .debug-section {
-        flex-shrink: 0;
+      .debug-pane {
+        display: none;
+        padding: 10px 14px;
+        height: 100%;
+        overflow-y: auto;
+        overflow-x: hidden;
+        box-sizing: border-box;
       }
 
-      .debug-section h4 {
-        font-size: 10px;
-        color: #666;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        margin-bottom: 7px;
-      }
+      .debug-pane.active { display: block; }
 
-      #debug-motions {
+      /* 动作 & 表情按钮 */
+      #debug-motions,
+      #debug-expressions {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px;
-        max-width: 480px;
+        gap: 5px;
       }
 
       .motion-btn {
@@ -187,13 +210,7 @@
       .motion-btn:hover { background: rgba(100,180,255,0.15); border-color: rgba(100,180,255,0.4); }
       .motion-btn.active { background: rgba(100,180,255,0.25); border-color: #64b4ff; color: #fff; }
 
-      .debug-divider {
-        width: 1px;
-        align-self: stretch;
-        background: rgba(255,255,255,0.07);
-        flex-shrink: 0;
-      }
-
+      /* 视线控件 */
       .look-at-row {
         display: flex;
         align-items: center;
@@ -209,7 +226,7 @@
       }
 
       .look-at-row input[type=range] {
-        width: 120px;
+        width: 160px;
         accent-color: #64b4ff;
         cursor: pointer;
       }
@@ -228,21 +245,41 @@
 
       .mouse-follow-label {
         font-size: 11px;
-        font-weight: normal;
         color: #666;
         cursor: pointer;
-        letter-spacing: 0;
-        display: block;
-        margin-top: 4px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-top: 6px;
       }
 
       .mouse-follow-label:has(input:checked) { color: #64b4ff; }
 
+      /* 日志 */
+      #debug-click-log {
+        font-size: 11px;
+        font-family: monospace;
+        color: #888;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .click-log-entry {
+        white-space: nowrap;
+        line-height: 1.6;
+      }
+
+      .click-log-entry .log-hit    { color: #64b4ff; }
+      .click-log-entry .log-miss   { color: #444; }
+      .click-log-entry .log-action { color: #88ffaa; }
+
+      /* 重置按钮（header 右侧） */
       .debug-reset-btn {
-        padding: 6px 16px;
+        padding: 3px 10px;
         background: rgba(255,80,80,0.1);
         border: 1px solid rgba(255,80,80,0.25);
-        border-radius: 4px;
+        border-radius: 3px;
         color: #ff8888;
         cursor: pointer;
         font-size: 11px;
@@ -251,6 +288,20 @@
       }
 
       .debug-reset-btn:hover { background: rgba(255,80,80,0.22); }
+
+      .debug-hitarea-label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        color: #555;
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+        transition: color 0.15s;
+      }
+
+      .debug-hitarea-label:has(input:checked) { color: #64b4ff; }
     </style>
     <!-- Live2D Cubism Core（需手动下载后放到 public/ 目录） -->
     <!-- 从 https://github.com/Live2D/CubismWebSamples 下载 Core 文件 -->
@@ -276,17 +327,28 @@
     <!-- 调试面板（底部抽屉，默认折叠） -->
     <div id="debug-panel">
       <div class="debug-header">
-        <span class="debug-header-title">调试面板</span>
-        <button id="debug-toggle-btn">▲ 展开</button>
+        <div class="debug-tabs">
+          <button class="debug-tab active" data-tab="motions">动作</button>
+          <button class="debug-tab" data-tab="expressions">表情</button>
+          <button class="debug-tab" data-tab="lookat">视线</button>
+          <button class="debug-tab" data-tab="log">日志</button>
+        </div>
+        <div class="debug-header-right">
+          <label class="debug-hitarea-label">
+            <input type="checkbox" id="hitarea-toggle"> HitArea
+          </label>
+          <button class="debug-reset-btn" id="debug-reset">重置</button>
+          <button id="debug-toggle-btn">▲ 展开</button>
+        </div>
       </div>
       <div class="debug-body">
-        <div class="debug-section">
-          <h4>动作</h4>
+        <div class="debug-pane active" id="pane-motions">
           <div id="debug-motions"></div>
         </div>
-        <div class="debug-divider"></div>
-        <div class="debug-section">
-          <h4>视线</h4>
+        <div class="debug-pane" id="pane-expressions">
+          <div id="debug-expressions"></div>
+        </div>
+        <div class="debug-pane" id="pane-lookat">
           <div class="look-at-row">
             <label>X</label>
             <input type="range" id="look-x" min="-1" max="1" step="0.05" value="0">
@@ -299,9 +361,8 @@
           </div>
           <label class="mouse-follow-label"><input type="checkbox" id="mouse-follow" checked> 跟随鼠标</label>
         </div>
-        <div class="debug-divider"></div>
-        <div class="debug-section">
-          <button class="debug-reset-btn" id="debug-reset">重置</button>
+        <div class="debug-pane" id="pane-log">
+          <div id="debug-click-log"></div>
         </div>
       </div>
     </div>

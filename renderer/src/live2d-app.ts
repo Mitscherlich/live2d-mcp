@@ -30,6 +30,7 @@ export class Live2DApp {
   private app: PIXI.Application | null = null
   private model: Live2DModel | null = null
   private modelInfo: ModelInfo | null = null
+  private hitAreaGraphics: PIXI.Graphics | null = null
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
     this.app = new PIXI.Application({
@@ -206,6 +207,108 @@ export class Live2DApp {
     } catch (e) {
       console.error('[Live2D] reset failed:', e)
       return false
+    }
+  }
+
+  // HitArea 边框 overlay
+  showHitAreaOverlay(show: boolean): void {
+    if (!this.app) return
+    if (!show) {
+      if (this.hitAreaGraphics) {
+        this.app.ticker.remove(this.drawHitAreaOverlay, this)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.app.stage.removeChild(this.hitAreaGraphics as any)
+        this.hitAreaGraphics.destroy()
+        this.hitAreaGraphics = null
+      }
+      return
+    }
+    if (this.hitAreaGraphics) return
+    this.hitAreaGraphics = new PIXI.Graphics()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.app.stage.addChild(this.hitAreaGraphics as any)
+    this.app.ticker.add(this.drawHitAreaOverlay, this)
+  }
+
+  private drawHitAreaOverlay(): void {
+    const g = this.hitAreaGraphics
+    if (!g || !this.model) return
+    g.clear()
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internalModel = (this.model as any).internalModel
+    const hitAreas: Array<{ Id?: string; id?: string; Name?: string; name?: string }> =
+      internalModel?.settings?.hitAreas ?? []
+
+    // getDrawableVertexPositions 返回 Cubism NDC 坐标（原点在模型中心，Y 轴向上，范围 [-1,1]）
+    // worldTransform.apply 期望纹理空间坐标（原点左上角，Y 轴向下，[0, originalWidth] × [0, originalHeight]）
+    // 需要先做坐标系转换：texX = (cx + 1) * halfW，texY = (1 - cy) * halfH
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const halfW: number = (internalModel?.originalWidth ?? 0) / 2
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const halfH: number = (internalModel?.originalHeight ?? 0) / 2
+
+    for (const area of hitAreas) {
+      const areaId = area.Id ?? area.id ?? ''
+
+      let vertices: Float32Array | undefined
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const coreModel = internalModel?.coreModel as any
+        // 方式 A: drawables 属性数组（pixi-live2d-display 封装）
+        if (coreModel?.drawables?.ids) {
+          const ids: string[] = Array.from(coreModel.drawables.ids as ArrayLike<string>)
+          const idx = ids.indexOf(areaId)
+          if (idx >= 0) vertices = coreModel.drawables.vertexPositions?.[idx]
+        }
+        // 方式 B: getDrawable* 方法（直接 Cubism SDK API）
+        if (!vertices && typeof coreModel?.getDrawableIndex === 'function') {
+          const idx: number = coreModel.getDrawableIndex(areaId)
+          if (idx >= 0) vertices = coreModel.getDrawableVertexPositions?.(idx)
+        }
+      } catch {
+        continue
+      }
+
+      if (!vertices || vertices.length < 4 || halfW === 0 || halfH === 0) continue
+
+      // Cubism NDC → 纹理空间坐标，计算 AABB
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (let i = 0; i < vertices.length; i += 2) {
+        const tx = (vertices[i] + 1) * halfW          // cx → texX
+        const ty = (1 - vertices[i + 1]) * halfH      // cy → texY（Y 轴翻转）
+        if (tx < minX) minX = tx
+        if (tx > maxX) maxX = tx
+        if (ty < minY) minY = ty
+        if (ty > maxY) maxY = ty
+      }
+
+      // 纹理空间坐标 → canvas 坐标（通过 worldTransform）
+      const wt = (this.model as unknown as { worldTransform: PIXI.Matrix }).worldTransform
+      const tl = wt.apply(new PIXI.Point(minX, minY))
+      const tr = wt.apply(new PIXI.Point(maxX, minY))
+      const br = wt.apply(new PIXI.Point(maxX, maxY))
+      const bl = wt.apply(new PIXI.Point(minX, maxY))
+
+      g.lineStyle(1.5, 0x64b4ff, 0.85)
+      g.beginFill(0x64b4ff, 0.07)
+      g.moveTo(tl.x, tl.y)
+      g.lineTo(tr.x, tr.y)
+      g.lineTo(br.x, br.y)
+      g.lineTo(bl.x, bl.y)
+      g.closePath()
+      g.endFill()
+    }
+  }
+
+  // 命中检测，返回点击到的区域名称列表（坐标为 canvas 像素坐标）
+  hitTest(x: number, y: number): string[] {
+    if (!this.model) return []
+    try {
+      // pixi-live2d-display 接受 canvas 全局坐标
+      return (this.model as unknown as { hitTest: (x: number, y: number) => string[] }).hitTest(x, y)
+    } catch {
+      return []
     }
   }
 
