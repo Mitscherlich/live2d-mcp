@@ -17,7 +17,7 @@ const COMMAND_TIMEOUT_MS = 5000
 
 export interface Command {
   requestId: string
-  type: 'setExpression' | 'playMotion' | 'lookAt' | 'setParameter' | 'reset' | 'getInfo'
+  type: 'setExpression' | 'playMotion' | 'lookAt' | 'setParameter' | 'reset' | 'getInfo' | 'startSpeaking' | 'speakWithElevenLabs' | 'startLipSyncOnly' | 'lipSync'
   params: Record<string, unknown>
 }
 
@@ -97,7 +97,7 @@ export function startWebSocketServer(): void {
 }
 
 export function sendCommand(
-  type: Command['type'],
+  type: string,
   params: Command['params'] = {}
 ): Promise<CommandResponse> {
   return new Promise((resolve, reject) => {
@@ -107,7 +107,7 @@ export function sendCommand(
     }
 
     const requestId = uuidv4()
-    const command: Command = { requestId, type, params }
+    const command: Command = { requestId, type: type as Command['type'], params }
 
     const timer = setTimeout(() => {
       pending.delete(requestId)

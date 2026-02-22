@@ -6,8 +6,11 @@
     "renderer"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w mcp-server\" \"npm run dev -w renderer\"",
-    "build": "npm run build -w mcp-server && npm run build -w renderer"
+    "dev": "concurrently \"npm run dev:mcp-server:tts\" \"npm run dev:renderer\"",
+    "build": "npm run build -w mcp-server && npm run build -w renderer",
+    "dev:mcp-server": "npm run dev -w mcp-server",
+    "dev:mcp-server:tts": "./start-with-tencent.sh",
+    "dev:renderer": "npm run dev -w renderer"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"

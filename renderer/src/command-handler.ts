@@ -57,6 +57,21 @@ export function createCommandHandler(app: Live2DApp) {
           return { requestId, success: true, data: info }
         }
 
+        case 'startLipSyncOnly': {
+          const duration = params.duration as number
+          const emotion = params.emotion as string
+          const ok = app.startLipSyncOnly(duration, emotion)
+          return { requestId, success: ok }
+        }
+
+        case 'lipSync': {
+          const audioUrl = params.audioUrl as string | undefined
+          const audioBase64 = params.audioBase64 as string | undefined
+          const lipSyncData = params.lipSyncData as Array<{time: number, value: number}> | undefined
+          const ok = app.lipSync(audioUrl, audioBase64, lipSyncData)
+          return { requestId, success: ok }
+        }
+
         default:
           return { requestId, success: false, error: `Unknown command type: ${type}` }
       }
