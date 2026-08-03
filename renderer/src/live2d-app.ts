@@ -184,6 +184,17 @@ export class Live2DApp {
     }
   }
 
+  /**
+   * 注册每帧回调（ADR 0001 · F3 口型驱动）。
+   * UPDATE_PRIORITY.LOW：保证在 Live2D 模型自身的 update（motion 求解，NORMAL
+   * 优先级）之后执行——口型写入的 ParamMouthOpenY 不被本帧 motion 覆盖，
+   * 且在当帧渲染生效。deltaMS 为真实帧间隔毫秒（PIXI ticker.deltaMS）。
+   */
+  addTicker(fn: (deltaMS: number) => void): void {
+    if (!this.app) return
+    this.app.ticker.add(() => fn(this.app!.ticker.deltaMS), null, PIXI.UPDATE_PRIORITY.LOW)
+  }
+
   // 重置
   reset(): boolean {
     if (!this.model) return false

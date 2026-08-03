@@ -1,13 +1,15 @@
 'use strict'
 
 /**
- * Live2D Companion · Electron 主进程（ADR 0001 · F2）
+ * Live2D Companion · Electron 主进程（ADR 0001 · F2 起；F3 扩展 voice 事件转发）
  *
- * 本片职责：
- *  - 创建角色窗：无边框 / 透明 / 置顶（macOS 优先，SPEC FR-D1 能力范围内对齐）
- *  - dev 加载 Vite dev server（VITE_DEV_SERVER_URL）；
- *    prod 经自定义 scheme（live2d-app://root/）加载 renderer/dist
- *  - 缺模型资源不硬崩：主进程日志 + renderer 内引导 UI 双重指引（FR-D3）
+ * 本片（F3）新增职责：
+ *  - sendVoiceEvent(win, raw)：规范化后经 'live2d:voice' 推送 voice 事件到 renderer
+ *    （F4 bridge /events 复用同一函数签名，本片不开 TCP 端口）；
+ *  - 测试注入：LIVE2D_VOICE_INJECT=1（或 --live2d-voice-inject）启动时，
+ *    经 additionalArguments 让 preload 暴露 window.live2d.injectVoice，
+ *    并注册 ipcMain 'live2d:voice-inject' 回环（renderer 注入 → 规范化 →
+ *    与真实推送完全同路径送回 renderer）。
  *
  * 明确不在本片（防跨片）：
  *  - bridge /health /events（F4）、MCP Streamable HTTP（F5）
@@ -19,12 +21,17 @@
 
 const path = require('node:path')
 const fs = require('node:fs')
-const { app, BrowserWindow, protocol, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, screen } = require('electron')
 const {
   RENDERER_SCHEME,
   RENDERER_ORIGIN,
   registerRendererProtocol,
 } = require('./renderer-protocol.cjs')
+const {
+  VOICE_EVENT_CHANNEL,
+  VOICE_INJECT_CHANNEL,
+  normalizeVoiceEvent,
+} = require('./voice-events.cjs')
 
 const WINDOW_WIDTH = 600
 const WINDOW_HEIGHT = 640
@@ -36,6 +43,38 @@ const isDev = DEV_SERVER_URL !== ''
 
 // 与 renderer/src/live2d-app.ts 的 MODEL_PATH 常量对应（F2 保留该常量）
 const MODEL_ENTRY_HINT = '/model/HiyoriPro/hiyori_pro_t11.model3.json'
+
+// F3 测试注入：LIVE2D_VOICE_INJECT=1 或 CLI --live2d-voice-inject 开启
+// （preload 经 additionalArguments 收到同名标志后才暴露 window.live2d.injectVoice）
+const VOICE_INJECT_ARG = '--live2d-voice-inject'
+const voiceInjectEnabled =
+  process.env.LIVE2D_VOICE_INJECT === '1' || process.argv.includes(VOICE_INJECT_ARG)
+
+/**
+ * 向 renderer 推送一条 voice 事件（F4 bridge /events 将复用本函数签名）。
+ * 负载先过权威规范化（electron/voice-events.cjs），非法输入丢弃并告警。
+ * @returns {boolean} 是否成功投递
+ */
+function sendVoiceEvent(win, raw) {
+  const event = normalizeVoiceEvent(raw)
+  if (!event) {
+    console.warn('[live2d] voice 事件非法，已丢弃:', JSON.stringify(raw)?.slice(0, 200))
+    return false
+  }
+  if (!win || win.isDestroyed()) return false
+  win.webContents.send(VOICE_EVENT_CHANNEL, event)
+  return true
+}
+
+// F3 测试注入回环：renderer 调 window.live2d.injectVoice → 本监听 → 规范化 →
+// 经 'live2d:voice' 送回同一 renderer（与 F4 真实推送走完全相同的 renderer 路径）。
+// 未开 inject 标志时不注册，生产路径无注入面。
+if (voiceInjectEnabled) {
+  ipcMain.on(VOICE_INJECT_CHANNEL, (event, raw) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? avatarWindow
+    sendVoiceEvent(win, raw)
+  })
+}
 
 // registerSchemesAsPrivileged 必须在 app ready 之前调用
 protocol.registerSchemesAsPrivileged([
@@ -106,6 +145,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // F3 测试注入标志透传：preload 检测到该参数才暴露 window.live2d.injectVoice
+      additionalArguments: voiceInjectEnabled ? [VOICE_INJECT_ARG] : [],
     },
   })
   avatarWindow = win
@@ -178,6 +219,9 @@ if (!gotSingleInstanceLock) {
       registerRendererProtocol(DIST_DIR)
     }
     console.log(`[live2d] 启动模式: ${isDev ? `dev（${DEV_SERVER_URL}）` : 'prod（renderer/dist）'}`)
+    if (voiceInjectEnabled) {
+      console.log('[live2d] voice 测试注入已开启（LIVE2D_VOICE_INJECT=1）：renderer 可经 window.live2d.injectVoice 注入 state/audio-level')
+    }
     console.log('[live2d] 模型资源指引: 将 Cubism 4 模型放入 renderer/public/model/HiyoriPro/' +
       `（入口 ${MODEL_ENTRY_HINT}），并将 live2dcubismcore.min.js 放入 renderer/public/；`)
     console.log('[live2d] 缺模型时窗口内显示引导而不会崩溃（生产模式放入后需重新 npm run build）')

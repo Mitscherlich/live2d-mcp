@@ -77,6 +77,17 @@
         background: #64b4ff;
       }
 
+      /* 语音活动指示（ADR 0001 F3）：idle 灰 / listening 黄 / speaking 绿 */
+      .dot.voice {
+        background: #666;
+      }
+      .dot.voice.listening {
+        background: #ffcc44;
+      }
+      .dot.voice.speaking {
+        background: #44ff88;
+      }
+
       /* Electron 壳（ADR 0001 F2）：透明窗体下去掉页面底色；状态栏兼作窗口拖拽区 */
       body.electron-mode {
         background: transparent;
@@ -339,6 +350,10 @@
       <div class="status-indicator">
         <div class="dot" id="model-dot"></div>
         <span id="model-status">模型未加载</span>
+      </div>
+      <div class="status-indicator">
+        <div class="dot voice" id="voice-dot"></div>
+        <span id="voice-status">语音 idle</span>
       </div>
       <div id="current-state">表情: - | 动作: -</div>
     </div>

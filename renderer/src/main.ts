@@ -9,6 +9,8 @@
 import type { Live2DApp } from './live2d-app.js'
 import { WsClient } from './ws-client.js'
 import { createCommandHandler } from './command-handler.js'
+import { createVoiceLipSync, type MouthParamTarget } from './lip-sync.js'
+import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
 
 // ADR 0001 · F2：Electron 壳经 preload 暴露 window.live2d；浏览器（legacy 双进程）无此对象
 const isElectron = typeof window.live2d !== 'undefined'
@@ -18,6 +20,8 @@ const wsDot = document.getElementById('ws-dot') as HTMLDivElement
 const wsStatus = document.getElementById('ws-status') as HTMLSpanElement
 const modelDot = document.getElementById('model-dot') as HTMLDivElement
 const modelStatus = document.getElementById('model-status') as HTMLSpanElement
+const voiceDot = document.getElementById('voice-dot') as HTMLDivElement
+const voiceStatus = document.getElementById('voice-status') as HTMLSpanElement
 const currentStateEl = document.getElementById('current-state') as HTMLDivElement
 const debugPanel = document.getElementById('debug-panel') as HTMLDivElement
 const debugHeader = debugPanel.querySelector('.debug-header') as HTMLDivElement
@@ -251,6 +255,80 @@ function showModelLoadError() {
   if (el) el.style.display = 'block'
 }
 
+/**
+ * ADR 0001 · F3：voice 状态机 + 口型驱动（Electron 一体化路径）。
+ *
+ * - 事件源：preload `window.live2d.onVoiceEvent`（main 推送的规范化 state/audio-level；
+ *   F4 bridge /events 与本片测试注入 injectVoice 共用该通道）。
+ * - 嘴参：模型参数表解析 ParamMouthOpenY 或等效别名；模型缺失/无该参时写入 no-op
+ *   （状态机与平滑照常推进，调试快照可见 smoothed 值变化）。
+ * - 帧驱动：有模型走 PIXI ticker（LOW 优先级，motion 之后写嘴参）；
+ *   无模型走 rAF（注入链路在无模型环境仍可证明嘴参目标值变化）。
+ */
+function initVoiceLipSync(app: Live2DApp | null) {
+  let mouthParam: MouthParamTarget | null = null
+  const info = app?.getModelInfo() ?? null
+  if (info) {
+    const mouthId = resolveMouthParamId(info.parameters.map((p) => p.id))
+    if (mouthId) {
+      const p = info.parameters.find((param) => param.id === mouthId)!
+      mouthParam = { id: p.id, min: p.min, max: p.max }
+    } else {
+      console.warn('[Voice] 模型参数表无 ParamMouthOpenY 或等效嘴参，口型写入 no-op（仅一次）')
+    }
+  }
+
+  const lip = createVoiceLipSync({
+    mouthParam,
+    writeMouth: (paramId, value) => {
+      if (paramId && app) app.setParameter(paramId, value)
+      // 无嘴参/无模型：no-op（快照仍记录 lastMouthWrite，证明目标值被驱动）
+    },
+  })
+
+  let shownActivity: VoiceActivity | '' = ''
+  function syncVoiceUI(activity: VoiceActivity) {
+    if (activity === shownActivity) return
+    shownActivity = activity
+    voiceDot.classList.toggle('listening', activity === 'listening')
+    voiceDot.classList.toggle('speaking', activity === 'speaking')
+    voiceStatus.textContent = `语音 ${activity}`
+  }
+  syncVoiceUI(lip.snapshot().activity)
+
+  const offVoice = window.live2d?.onVoiceEvent?.((event) => lip.handleEvent(event))
+  if (!offVoice) console.warn('[Voice] preload 未暴露 onVoiceEvent，voice 通道不可用')
+
+  if (app) {
+    app.addTicker((dt) => {
+      lip.tick(dt)
+      syncVoiceUI(lip.snapshot().activity)
+    })
+  } else {
+    let prev = performance.now()
+    const frame = (t: number) => {
+      const dt = t - prev
+      prev = t
+      lip.tick(dt)
+      syncVoiceUI(lip.snapshot().activity)
+      requestAnimationFrame(frame)
+    }
+    requestAnimationFrame(frame)
+  }
+
+  // 调试快照：scripts/f3-lipsync-proof.mjs 经 CDP 读取，证明注入改变了嘴参目标
+  window.__live2dVoiceDebug = {
+    snapshot: () => ({
+      ...lip.snapshot(),
+      modelLoaded: app?.isLoaded() ?? false,
+      injectEnabled: typeof window.live2d?.injectVoice === 'function',
+    }),
+  }
+  console.log(`[Voice] 口型驱动已挂接（嘴参: ${mouthParam?.id ?? '未解析（no-op）'}，注入: ${
+    typeof window.live2d?.injectVoice === 'function' ? '开' : '关'
+  }）`)
+}
+
 async function main() {
   if (isElectron) {
     // Electron 壳适配：透明窗体下去掉页面底色、状态栏变为窗口拖拽区（样式见 index.html）
@@ -296,10 +374,12 @@ async function main() {
   }
 
   if (isElectron) {
-    // Electron 一体化默认路径：F4 起由主进程经 preload IPC 推送控制事件，
-    // 本片不连接遗留 WS；WS 缺席绝不允许阻断模型渲染（SPEC §10.3 降级要求）。
+    // Electron 一体化默认路径：F3 起 voice 事件由 main 经 preload IPC 推送（本片挂接），
+    // 表情/动作等控制事件自 F4/F5 起接入；本片不连接遗留 WS。
+    // WS 缺席绝不允许阻断模型渲染与口型驱动（SPEC §10.3 降级要求）。
+    initVoiceLipSync(app)
     wsDot.classList.add('electron')
-    wsStatus.textContent = 'Electron 模式（控制通道待 F4 接入）'
+    wsStatus.textContent = 'Electron 模式（voice 已接入，控制通道待 F4）'
     return
   }
 

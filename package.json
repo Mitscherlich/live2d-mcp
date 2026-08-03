@@ -11,8 +11,9 @@
     "dev:electron": "node scripts/dev-electron.mjs",
     "start": "electron .",
     "build": "npm run build -w mcp-server && npm run build -w renderer && npm run build:electron",
-    "build:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer-protocol.cjs",
-    "test": "node --test 'electron/test/**/*.test.cjs'",
+    "build:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer-protocol.cjs && node --check electron/voice-events.cjs",
+    "test": "node --test 'electron/test/**/*.test.cjs' 'renderer/test/**/*.test.ts'",
+    "proof:f3": "node scripts/f3-lipsync-proof.mjs",
     "dev:mcp-server": "npm run dev -w mcp-server",
     "dev:renderer": "npm run dev -w renderer",
     "dev:legacy": "concurrently \"npm run dev:mcp-server\" \"npm run dev:renderer\""

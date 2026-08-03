@@ -7,7 +7,7 @@
 | 实现计划 | [`.adr/0001-electron-live2d-companion/plan.md`](../.adr/0001-electron-live2d-companion/plan.md)（切片 F1–F7） |
 | 参考实现（只读） | `/Users/mitscherlich/f/persona`（MIT；分层与契约借鉴，**禁止修改**，不引入其 VRM/Three 渲染栈） |
 
-> 本文描述**目标架构**。当前仓库处于迁移期：F1 已完成 TTS 全链路清除，Electron 壳（F2）及之后的模块尚未实现。
+> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）已落地；bridge（F4）及之后尚未实现。
 
 ---
 
@@ -115,6 +115,17 @@ voice source 四模式：`automatic`（默认匹配 codex/chatgpt 类进程名�
 - **嘴型**：每个动画帧按当前 `level` 与 `activity === speaking` 平滑驱动嘴参（思想对齐 persona `useAmplitudeLipSync`，映射到 Live2D `ParamMouthOpenY`）。
 - **状态**：`idle` / `listening` / `speaking`；短静音（默认 **900ms**，可配置常量）内保持 speaking，避免句间抖动切回 idle。
 - **优先级**：MCP 触发的 `play_motion` / `set_expression` 可临时优先于 voice 驱动的身体动作；口型 level 驱动不被打断。
+
+### 4.3 Voice 事件通道（F3 落地）
+
+| 环节 | 位置 | 说明 |
+|------|------|------|
+| 权威规范化 | `electron/voice-events.cjs` | `normalizeVoiceEvent`：白名单字段、level clamp `[0,1]`、phase/activity 枚举校验；非法负载丢弃（NFR-3，有单测） |
+| main → renderer | IPC `live2d:voice` | `sendVoiceEvent(win, raw)`（`electron/main.cjs`）；F4 bridge `/events` 复用同一函数签名 |
+| preload 窄 API | `electron/preload.cjs` | `window.live2d.onVoiceEvent(cb)`（浅校验 type 白名单后转发，返回取消订阅）；不暴露任意 IPC |
+| renderer 消费 | `renderer/src/main.ts` → `lip-sync.ts` → `voice-state.ts` | 状态机 + 平滑 + 嘴参解析（`ParamMouthOpenY` 或别名，缺模型/缺参 no-op）；PIXI ticker LOW 优先级写入（motion 之后、当帧渲染生效） |
+
+**测试注入（仅开发/测试）**：以 `LIVE2D_VOICE_INJECT=1`（或 CLI `--live2d-voice-inject`）启动 main 时，preload 经 `additionalArguments` 检测标志后额外暴露 `window.live2d.injectVoice(payload)`；该调用经 IPC `live2d:voice-inject` 回到 main，**过同一 `normalizeVoiceEvent`** 后再经 `live2d:voice` 送回 renderer——注入与真实推送走完全相同的 renderer 路径。未开标志时 `injectVoice` 不存在（生产无注入面）。调试快照 `window.__live2dVoiceDebug.snapshot()`（activity / smoothedMouth / mouthWrites / events 等）供脚本断言，证据脚本：`scripts/f3-lipsync-proof.mjs`（`npm run proof:f3`，`--e2e` 走 CDP 端到端）。
 
 ---
 
