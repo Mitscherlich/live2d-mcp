@@ -7,7 +7,7 @@
 | 实现计划 | [`.adr/0001-electron-live2d-companion/plan.md`](../.adr/0001-electron-live2d-companion/plan.md)（切片 F1–F7） |
 | 参考实现（只读） | `/Users/mitscherlich/f/persona`（MIT；分层与契约借鉴，**禁止修改**，不引入其 VRM/Three 渲染栈） |
 
-> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）已落地；bridge（F4）及之后尚未实现。
+> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）、F4（loopback bridge `/health` + `/events`，见 §3）已落地；MCP（F5）及之后尚未实现。
 
 ---
 
@@ -81,17 +81,38 @@ renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
 
 ---
 
-## 3. 本机集成面（bridge）
+## 3. 本机集成面（bridge，F4 已落地）
 
-默认监听 **`127.0.0.1:47832`**，环境变量 `LIVE2D_BRIDGE_PORT` 可覆盖。仅 loopback；拒绝非本机 Host/Origin。
+默认监听 **`127.0.0.1:47832`**，环境变量 `LIVE2D_BRIDGE_PORT` 可覆盖端口（host 永远 loopback，不提供非 loopback 绑定）。仅 loopback；Host 头必须解析为 `127.0.0.1` / `localhost` / `[::1]`，非本机 Host 一律 403；Origin 头存在时仅受信本机 origin（`http(s)://loopback[:port]`）放行，其余 403（SPEC §5.5）。
 
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/health` | GET | 进程存活、模型就绪、窗口可见、voice/listener 摘要；不含用户内容 |
-| `/events` | POST | JSON：`state`（voice state）/ `audio-level`（level，clamp 到 `[0,1]`）/ 可选动作或表情命令 |
-| `/mcp` | ALL | Streamable HTTP MCP，与 bridge 同端口 |
+| 接口 | 方法 | 状态 | 说明 |
+|------|------|------|------|
+| `/health` | GET | **F4 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 前为 `not-started`）/ `mcp`（F5 前 `implemented:false`）；`modelReady` 为 `null`（main 侧暂不可知，F5 `get_status` 才做 renderer 往返）。**不含用户内容** |
+| `/events` | POST | **F4 已落地** | JSON：`state`（SPEC §8.1）/ `audio-level`（§8.2，level clamp `[0,1]`）。body 上限 64KB；过 `electron/voice-events.cjs` 权威规范化（与 F3 注入同一份校验）后调 `sendVoiceEvent` 推送到 renderer。202 `{"accepted":true}`；非法 JSON 400 / 非法事件 422 / 超限 413 |
+| `/mcp` | ALL | F5 未实现 | 404 `{"error":"mcp not implemented (F5)"}`（路由占位，便于探测） |
 
-MCP 连接示例：
+实现：`electron/bridge-server.cjs`（纯 `node:http`，无 Electron 依赖，`node:test` 直测）；main 在 `app.whenReady` 后 `listen`、`will-quit` 时 `close`（`electron/main.cjs` `startBridge()`）。监听失败（如端口占用）不杀应用，打印清晰日志提示用 `LIVE2D_BRIDGE_PORT` 换端口。
+
+curl 示例（应用运行中）：
+
+```bash
+curl -s http://127.0.0.1:47832/health
+# → {"ok":true,"bridgePort":47832,"voice":{...},"modelReady":null,"windowVisible":true,...}
+
+curl -s -X POST http://127.0.0.1:47832/events \
+  -H 'content-type: application/json' \
+  -d '{"type":"state","state":{"phase":"active","activity":"speaking","microphoneMuted":false,"outputMuted":false}}'
+# → 202 {"accepted":true}
+
+curl -s -X POST http://127.0.0.1:47832/events \
+  -H 'content-type: application/json' \
+  -d '{"type":"audio-level","level":0.8}'
+# → 202 {"accepted":true}；renderer 口型目标随 level 驱动（证据：scripts/f4-bridge-proof.mjs）
+```
+
+端到端证据：`npm run proof:f4`（默认 HTTP 层：curl → bridge → onEvent 与权威规范化同源；`--e2e` 追加真 Electron + curl 注入 + CDP 快照断言口型变化）。
+
+MCP 连接示例（F5 落地后生效）：
 
 ```bash
 codex mcp add live2d --url http://127.0.0.1:47832/mcp
@@ -121,7 +142,7 @@ voice source 四模式：`automatic`（默认匹配 codex/chatgpt 类进程名�
 | 环节 | 位置 | 说明 |
 |------|------|------|
 | 权威规范化 | `electron/voice-events.cjs` | `normalizeVoiceEvent`：白名单字段、level clamp `[0,1]`、phase/activity 枚举校验；非法负载丢弃（NFR-3，有单测） |
-| main → renderer | IPC `live2d:voice` | `sendVoiceEvent(win, raw)`（`electron/main.cjs`）；F4 bridge `/events` 复用同一函数签名 |
+| main → renderer | IPC `live2d:voice` | `sendVoiceEvent(win, raw)`（`electron/main.cjs`）；F4 bridge `/events` 的 onEvent 即调用此函数（§3） |
 | preload 窄 API | `electron/preload.cjs` | `window.live2d.onVoiceEvent(cb)`（浅校验 type 白名单后转发，返回取消订阅）；不暴露任意 IPC |
 | renderer 消费 | `renderer/src/main.ts` → `lip-sync.ts` → `voice-state.ts` | 状态机 + 平滑 + 嘴参解析（`ParamMouthOpenY` 或别名，缺模型/缺参 no-op）；PIXI ticker LOW 优先级写入（motion 之后、当帧渲染生效） |
 

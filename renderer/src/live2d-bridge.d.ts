@@ -23,8 +23,8 @@ declare global {
       }
       /** 订阅 main 推送的规范化 voice 事件（state / audio-level）；返回取消订阅函数 */
       onVoiceEvent?: (callback: (event: VoiceEvent) => void) => () => void
-      /** 仅测试注入（main 以 LIVE2D_VOICE_INJECT=1 启动时存在）：回环经 main 规范化后再次到达 onVoiceEvent */
-      injectVoice?: (event: unknown) => void
+      /** 仅测试注入（main 以 LIVE2D_VOICE_INJECT=1 启动时存在）：回环经 main 规范化后再次到达 onVoiceEvent；返回浅校验是否受理 */
+      injectVoice?: (event: unknown) => boolean
     }
     /** renderer 口型调试快照（scripts/f3-lipsync-proof.mjs 经 CDP 读取） */
     __live2dVoiceDebug?: {
