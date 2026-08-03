@@ -10,11 +10,15 @@
  *  - POST /events  → SPEC §8.1 state / §8.2 audio-level；body 先过
  *    electron/voice-events.cjs 的权威 normalizeVoiceEvent（与 F3 注入同一份校验，
  *    禁止第二套事件校验分叉），规范化后交 onEvent 回调（main 内接 sendVoiceEvent）
- *  - /mcp          → F5 才实现 Streamable HTTP MCP；本片明确 404 + JSON 说明
+ *  - /mcp          → F5 已落地：委托 Streamable HTTP MCP handler
+ *    （electron/mcp-server.cjs，POST/GET/DELETE；body 先过同上限 JSON 解析，
+ *    解析失败映射 JSON-RPC 错误；未注入 mcpHandler 时保持 404 占位）
  *
  * 安全（NFR-2 / SPEC §5.5）：
  *  - Host 头必须解析为 loopback（127.0.0.1 / localhost / [::1]），否则 403
- *  - Origin 头存在时必须为受信本机 origin，否则 403；无 Origin（curl 等）放行
+ *  - bind host 在模块边界强制 loopback（构造时拒绝 0.0.0.0 / LAN 地址）
+ *  - Origin 头作用于写路径（/events 与 /mcp）：存在时必须为受信本机 origin，
+ *    否则 403；无 Origin（curl 等）放行；/health 只读不含用户内容，不校验 Origin
  *  - body 上限 64KB；非法 JSON / 非法事件形状 / 越界 level 一律 4xx，不崩溃
  *
  * 纯 node:http、无 Electron 依赖：node:test 可直接起临时端口实例单测（NFR-3）。
@@ -24,10 +28,12 @@
 
 const http = require('node:http')
 const { normalizeVoiceEvent } = require('./voice-events.cjs')
+const { sendJsonRpcError } = require('./mcp-server.cjs')
 
 const DEFAULT_PORT = 47832
 const LOOPBACK_HOST = '127.0.0.1'
 const MAX_BODY_BYTES = 64 * 1024
+const MCP_METHODS = new Set(['POST', 'GET', 'DELETE'])
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
 // 受信 Origin：仅本机 loopback http(s) origin（SPEC §5.5「非本机 Origin 拒绝」）
@@ -108,15 +114,23 @@ function readJsonBody(request) {
 /**
  * 创建 bridge server（不自动 listen）。
  * @param {object} opts
- * @param {string} [opts.host] 绑定地址（仅应传 loopback；默认 127.0.0.1）
+ * @param {string} [opts.host] 绑定地址（默认 127.0.0.1；**模块边界强制 loopback**，
+ *   传非 loopback 地址直接抛 TypeError，防未来调用方误配 0.0.0.0）
  * @param {number} [opts.port] 端口（默认 47832；测试可传 0 取临时端口）
  * @param {(event: object) => (boolean|void)} opts.onEvent 规范化后的 voice 事件回调；
  *   返回 false 视为投递失败（如窗口已销毁），HTTP 层回 422
  * @param {(voiceSummary: object) => object} [opts.getHealth] /health 附加字段回调
  *   （main 注入窗口/模型/listener 摘要；不含用户内容）
+ * @param {((request: object, response: object, parsedBody: unknown) => Promise<void>)|null}
+ *   [opts.mcpHandler] F5 Streamable HTTP MCP 处理器（electron/mcp-server.cjs）；
+ *   未注入时 /mcp 保持 404 占位
  */
-function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent, getHealth } = {}) {
+function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent, getHealth, mcpHandler = null } = {}) {
   if (typeof onEvent !== 'function') throw new TypeError('createBridgeServer: onEvent 必填')
+  // 模块边界强制 loopback 绑定（决策 5/6；F4 验收发现 3 的防御性收紧）
+  if (!LOOPBACK_HOSTS.has(String(host).toLowerCase())) {
+    throw new TypeError(`createBridgeServer: host 必须为 loopback（127.0.0.1/localhost/[::1]），收到 ${JSON.stringify(host)}`)
+  }
 
   // voice 摘要（仅枚举与数值，不含用户内容），供 /health 与测试观测
   const stats = {
@@ -254,8 +268,38 @@ function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent
     }
 
     if (pathname === '/mcp') {
-      // F5 落地 Streamable HTTP MCP；本片明确未实现（保留路由占位便于探测）
-      sendJson(response, 404, { error: 'mcp not implemented (F5)' })
+      // F5 Streamable HTTP MCP：Origin 校验（写路径同 /events 口径）后委托 mcpHandler
+      if (!originAllowed(origin)) {
+        sendJson(response, 403, { error: 'origin not allowed' })
+        return
+      }
+      if (!MCP_METHODS.has(request.method)) {
+        sendJson(response, 405, { error: 'method not allowed' }, { allow: 'POST, GET, DELETE' })
+        return
+      }
+      if (mcpHandler == null) {
+        sendJson(response, 404, { error: 'mcp not implemented (F5)' })
+        return
+      }
+      const parsedBody =
+        request.method === 'POST' ? readJsonBody(request) : Promise.resolve(undefined)
+      void parsedBody
+        .then((body) => mcpHandler(request, response, body))
+        .catch((error) => {
+          if (response.headersSent) {
+            console.error('[live2d] /mcp handler 在响应写出后抛出异常:', error)
+            return
+          }
+          // transport 之前的错误映射为 JSON-RPC 错误帧（MCP 客户端可解析）
+          if (error?.code === 'BODY_TOO_LARGE') {
+            sendJsonRpcError(response, 413, -32000, 'request body is too large')
+          } else if (error?.code === 'INVALID_JSON') {
+            sendJsonRpcError(response, 400, -32700, 'parse error: request body is not valid JSON')
+          } else {
+            console.error('[live2d] /mcp handler 异常:', error)
+            sendJsonRpcError(response, 500, -32603, 'internal server error')
+          }
+        })
       return
     }
 

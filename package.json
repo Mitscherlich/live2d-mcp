@@ -1,6 +1,7 @@
 {
   "name": "live2d-mcp",
   "private": true,
+  "version": "0.1.0",
   "main": "electron/main.cjs",
   "workspaces": [
     "mcp-server",
@@ -11,13 +12,18 @@
     "dev:electron": "node scripts/dev-electron.mjs",
     "start": "electron .",
     "build": "npm run build -w mcp-server && npm run build -w renderer && npm run build:electron",
-    "build:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer-protocol.cjs && node --check electron/voice-events.cjs && node --check electron/bridge-server.cjs",
+    "build:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer-protocol.cjs && node --check electron/voice-events.cjs && node --check electron/bridge-server.cjs && node --check electron/mcp-server.cjs && node --check electron/renderer-commands.cjs",
     "test": "node --test 'electron/test/**/*.test.cjs' 'renderer/test/**/*.test.ts'",
     "proof:f3": "node scripts/f3-lipsync-proof.mjs",
     "proof:f4": "node scripts/f4-bridge-proof.mjs",
+    "proof:f5": "node scripts/f5-mcp-proof.mjs",
     "dev:mcp-server": "npm run dev -w mcp-server",
     "dev:renderer": "npm run dev -w renderer",
     "dev:legacy": "concurrently \"npm run dev:mcp-server\" \"npm run dev:renderer\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "concurrently": "^9.0.0",

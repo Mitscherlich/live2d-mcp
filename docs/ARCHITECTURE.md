@@ -7,7 +7,7 @@
 | 实现计划 | [`.adr/0001-electron-live2d-companion/plan.md`](../.adr/0001-electron-live2d-companion/plan.md)（切片 F1–F7） |
 | 参考实现（只读） | `/Users/mitscherlich/f/persona`（MIT；分层与契约借鉴，**禁止修改**，不引入其 VRM/Three 渲染栈） |
 
-> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）、F4（loopback bridge `/health` + `/events`，见 §3）已落地；MCP（F5）及之后尚未实现。
+> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）、F4（loopback bridge `/health` + `/events`，见 §3）、F5（Streamable HTTP MCP `/mcp` 工具面，见 §3/§5）已落地；voice listener（F6）、托盘/设置（F7）尚未实现。
 
 ---
 
@@ -81,17 +81,17 @@ renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
 
 ---
 
-## 3. 本机集成面（bridge，F4 已落地）
+## 3. 本机集成面（bridge，F4/F5 已落地）
 
-默认监听 **`127.0.0.1:47832`**，环境变量 `LIVE2D_BRIDGE_PORT` 可覆盖端口（host 永远 loopback，不提供非 loopback 绑定）。仅 loopback；Host 头必须解析为 `127.0.0.1` / `localhost` / `[::1]`，非本机 Host 一律 403；Origin 头存在时仅受信本机 origin（`http(s)://loopback[:port]`）放行，其余 403（SPEC §5.5）。
+默认监听 **`127.0.0.1:47832`**，环境变量 `LIVE2D_BRIDGE_PORT` 可覆盖端口（host 永远 loopback：bind host 在 `createBridgeServer` 模块边界强制，非 loopback 直接抛错）。仅 loopback；Host 头必须解析为 `127.0.0.1` / `localhost` / `[::1]`，非本机 Host 一律 403（DNS rebinding 防线，对全部路由生效）；Origin 头作用于写路径（`/events` 与 `/mcp`）：存在时仅受信本机 origin（`http(s)://loopback[:port]`）放行，其余 403；无 Origin（curl 等）放行。`/health` 只读且不含用户内容，不校验 Origin（浏览器跨源也读不到响应——无 CORS 放行头）。
 
 | 接口 | 方法 | 状态 | 说明 |
 |------|------|------|------|
-| `/health` | GET | **F4 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 前为 `not-started`）/ `mcp`（F5 前 `implemented:false`）；`modelReady` 为 `null`（main 侧暂不可知，F5 `get_status` 才做 renderer 往返）。**不含用户内容** |
+| `/health` | GET | **F4 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 前为 `not-started`）/ `mcp`（F5 起 `implemented:true` + 实际 `url`）；`modelReady` 恒 `null`（`/health` 不做 renderer 往返；模型真实状态用 MCP `get_status`，见 §5）。**不含用户内容** |
 | `/events` | POST | **F4 已落地** | JSON：`state`（SPEC §8.1）/ `audio-level`（§8.2，level clamp `[0,1]`）。body 上限 64KB；过 `electron/voice-events.cjs` 权威规范化（与 F3 注入同一份校验）后调 `sendVoiceEvent` 推送到 renderer。202 `{"accepted":true}`；非法 JSON 400 / 非法事件 422 / 超限 413 |
-| `/mcp` | ALL | F5 未实现 | 404 `{"error":"mcp not implemented (F5)"}`（路由占位，便于探测） |
+| `/mcp` | POST/GET/DELETE | **F5 已落地** | Streamable HTTP MCP（`electron/mcp-server.cjs`，`@modelcontextprotocol/sdk`，server 名 `live2d-companion`）。工具面见 §5。每 `initialize` 一个 session（`mcp-session-id` 头，`enableJsonResponse`）；无 session 的非 initialize POST → 400 `-32000`；body 复用 64KB 上限，坏 JSON → 400 `-32700`；其他方法 → 405；未注入 handler → 404 占位 |
 
-实现：`electron/bridge-server.cjs`（纯 `node:http`，无 Electron 依赖，`node:test` 直测）；main 在 `app.whenReady` 后 `listen`、`will-quit` 时 `close`（`electron/main.cjs` `startBridge()`）。监听失败（如端口占用）不杀应用，打印清晰日志提示用 `LIVE2D_BRIDGE_PORT` 换端口。
+实现：`electron/bridge-server.cjs`（纯 `node:http`，无 Electron 依赖，`node:test` 直测）+ `electron/mcp-server.cjs`（MCP 协议与工具面，controller 由 main 注入）；main 在 `app.whenReady` 后 `listen`、`will-quit` 时 `close`（`electron/main.cjs` `startBridge()`）。监听失败（如端口占用）不杀应用，打印清晰日志提示用 `LIVE2D_BRIDGE_PORT` 换端口。
 
 curl 示例（应用运行中）：
 
@@ -112,11 +112,14 @@ curl -s -X POST http://127.0.0.1:47832/events \
 
 端到端证据：`npm run proof:f4`（默认 HTTP 层：curl → bridge → onEvent 与权威规范化同源；`--e2e` 追加真 Electron + curl 注入 + CDP 快照断言口型变化）。
 
-MCP 连接示例（F5 落地后生效）：
+MCP 连接示例（F5 已生效，应用运行中）：
 
 ```bash
 codex mcp add live2d --url http://127.0.0.1:47832/mcp
 ```
+
+Claude Code / Hermes 使用同一 URL（按其 MCP 配置格式，SPEC §8.4）。
+MCP 端到端证据：`npm run proof:f5`（默认 HTTP 层：官方 SDK client → tools/list + read/write 调用 + 非法参数拒绝 + 缺模降级；`--e2e` 追加真 Electron：control_window 真实作用窗口、set_expression 经 CDP 快照坐实抵达 renderer）。
 
 ---
 
@@ -148,22 +151,38 @@ voice source 四模式：`automatic`（默认匹配 codex/chatgpt 类进程名�
 
 **测试注入（仅开发/测试）**：以 `LIVE2D_VOICE_INJECT=1`（或 CLI `--live2d-voice-inject`）启动 main 时，preload 经 `additionalArguments` 检测标志后额外暴露 `window.live2d.injectVoice(payload)`；该调用经 IPC `live2d:voice-inject` 回到 main，**过同一 `normalizeVoiceEvent`** 后再经 `live2d:voice` 送回 renderer——注入与真实推送走完全相同的 renderer 路径。未开标志时 `injectVoice` 不存在（生产无注入面）。调试快照 `window.__live2dVoiceDebug.snapshot()`（activity / smoothedMouth / mouthWrites / events 等）供脚本断言，证据脚本：`scripts/f3-lipsync-proof.mjs`（`npm run proof:f3`，`--e2e` 走 CDP 端到端）。
 
+### 4.4 命令通道（F5 落地，MCP 视觉工具执行路径）
+
+| 环节 | 位置 | 说明 |
+|------|------|------|
+| 帧协议常量/校验 | `electron/renderer-commands.cjs` | type 白名单（`getModelInfo` / `setExpression` / `playMotion` / `lookAt` / `setParameter` / `reset`）、命令帧形状校验、结果帧规范化（纯函数，有单测） |
+| main → renderer | IPC `live2d:command` | `sendRendererCommand(type, params)`（`electron/main.cjs`）：携带 `requestId`，等待结果帧（超时 2s，窗口销毁立即失败）；所有失败 resolve 为 `{ ok:false, error }`，MCP 工具层转 isError |
+| renderer → main | IPC `live2d:command-result` / `live2d:command-ready` | preload 注册 `onCommand` 即发 ready 帧；结果帧过 `normalizeCommandResultFrame` 防御性校验后按 `requestId` 配对 |
+| preload 窄 API | `electron/preload.cjs` | `window.live2d.onCommand(handler)`（帧形状浅校验 + handler 异常兜底；sandbox 限制下内联常量，与 renderer-commands.cjs 同步） |
+| renderer 执行 | `renderer/src/main.ts` `initCommandChannel` | 映射到 `Live2DApp`（表情/动作/视线/参数/重置/模型信息）；**无模型时 `{ ok:false, error }` 清晰降级不崩溃**；调试快照 `window.__live2dCommandDebug.snapshot()`（counts / lastCommand / modelLoaded）供 proof 断言 |
+
+MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路证据 `npm run proof:f5 -- --e2e`（CDP 计数坐实命令抵达 renderer；非法参数在 MCP zod 层被拒、不进 renderer）。
+
 ---
 
-## 5. MCP 工具面（目标态）
+## 5. MCP 工具面（F5 已落地）
+
+挂载：bridge 同端口 `/mcp`（默认 `http://127.0.0.1:47832/mcp`，SPEC §8.4），实现 `electron/mcp-server.cjs`（server 名 `live2d-companion`）；工具回调经 main controller → §4.4 命令通道转发 renderer（窗口控制由 main 自完成）。入参由 zod schema 校验，非法输入在 MCP 层以 isError 拒绝（不进 renderer）；模型未加载时视觉工具返回 `success:false` 清晰降级，不崩溃。
 
 | 工具 | 读写 | 说明 |
 |------|------|------|
-| `get_status` | 只读 | 窗口、模型、phase/activity、listener 状态 |
-| `control_window` | 写 | `show` \| `hide` \| `toggle` |
-| `get_model_info` | 只读 | 表情 / 动作组 / 关键参数列表 |
+| `get_status` | 只读 | 窗口可见性、bridge 端口/URL、voice 摘要（phase/activity/lastLevel/计数，与 `/health` 同源）、listener 占位（F6 前 `not-started`）、mcp 端点、模型就绪（renderer 往返真值：`ready:true/false`，通道未挂接为 `null`）；不含用户内容 |
+| `control_window` | 写 | `show` \| `hide` \| `toggle`（hide 不退出应用；窗口已关闭时 show/toggle 会重建） |
+| `get_model_info` | 只读 | 表情 / 动作组 / 参数列表（renderer 往返；无模型清晰错误） |
 | `set_expression` | 写 | 表情名 |
-| `play_motion` | 写 | group + 可选 index/priority |
-| `look_at` | 写 | 可选（低成本保留） |
-| `set_parameter` | 写 | 可选（低成本保留） |
-| `reset` | 写 | 可选（低成本保留） |
+| `play_motion` | 写 | group + 可选 index/priority（index 省略随机、priority 默认 2） |
+| `look_at` | 写 | x/y ∈ [-1,1]（低成本保留） |
+| `set_parameter` | 写 | param_id + value（低成本保留） |
+| `reset` | 写 | 默认表情 + Idle + 视线归中（低成本保留） |
 
-Server instructions 须声明：本应用**不说话、不播放 agent 音频**，仅提供视觉陪伴与窗口控制。
+Server instructions 已声明：本应用**不说话、不播放 agent 音频**、无任何 TTS/语音工具，仅提供视觉表现与窗口控制（SPEC §6.4 强制项）。**禁止工具** `speak` / `lip_sync*` / TTS 封装未注册、不可发现（proof 与单测均含否定断言）。
+
+调用证据：`npm run proof:f5`（HTTP 层）与 `node scripts/f5-mcp-proof.mjs --e2e`（真 Electron：tools/list、get_status、control_window 真实作用于窗口、set_expression 经 CDP 坐实抵达 renderer）。
 
 ---
 

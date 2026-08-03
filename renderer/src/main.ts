@@ -329,6 +329,110 @@ function initVoiceLipSync(app: Live2DApp | null) {
   }）`)
 }
 
+/**
+ * ADR 0001 · F5：main → renderer 命令通道（MCP 视觉工具执行路径）。
+ *
+ * main（Electron 一体化 MCP 工具回调）经 preload `window.live2d.onCommand` 下发
+ * 白名单命令（getModelInfo / setExpression / playMotion / lookAt / setParameter /
+ * reset），此处映射到 Live2DApp；无模型时返回 ok:false 清晰降级（不崩溃），
+ * MCP 工具层转为 isError。调试快照 __live2dCommandDebug 供 scripts/f5-mcp-proof.mjs
+ * 经 CDP 断言命令真实到达 renderer。
+ */
+function initCommandChannel(app: Live2DApp | null) {
+  const counts: Record<string, number> = {}
+  let lastCommand: string | null = null
+  let lastError: string | null = null
+  const MODEL_MISSING =
+    'Live2D 模型未加载（Cubism Core 或模型资源缺失，见窗口内引导）；命令未执行'
+
+  const off = window.live2d?.onCommand?.(({ type, params }) => {
+    counts[type] = (counts[type] ?? 0) + 1
+    lastCommand = type
+    const loaded = Boolean(app && app.isLoaded())
+
+    if (type === 'getModelInfo') {
+      if (!loaded) {
+        lastError = MODEL_MISSING
+        return { ok: false, error: MODEL_MISSING }
+      }
+      return { ok: true, data: app!.getModelInfo() }
+    }
+
+    if (!loaded) {
+      lastError = MODEL_MISSING
+      return { ok: false, error: MODEL_MISSING }
+    }
+    const live2d = app!
+
+    switch (type) {
+      case 'setExpression': {
+        const expression = typeof params.expression === 'string' ? params.expression : ''
+        const ok = expression !== '' && live2d.setExpression(expression)
+        if (ok) {
+          currentExpression = expression
+          updateStateBar()
+          return { ok: true, data: { expression } }
+        }
+        lastError = `表情 "${expression}" 不存在或不可用`
+        return { ok: false, error: `${lastError}（用 get_model_info 查询可用表情）` }
+      }
+      case 'playMotion': {
+        const group = typeof params.group === 'string' ? params.group : ''
+        const index = typeof params.index === 'number' ? Math.trunc(params.index) : -1
+        const priority = typeof params.priority === 'number' ? Math.trunc(params.priority) : 2
+        const ok = group !== '' && live2d.playMotion(group, index, priority)
+        if (ok) {
+          currentMotion = motionLabel(group, index >= 0 ? index : undefined)
+          updateStateBar()
+          return { ok: true, data: { group, index, priority } }
+        }
+        lastError = `动作分组 "${group}" 不存在或不可用`
+        return { ok: false, error: `${lastError}（用 get_model_info 查询可用分组）` }
+      }
+      case 'lookAt': {
+        const x = typeof params.x === 'number' ? params.x : 0
+        const y = typeof params.y === 'number' ? params.y : 0
+        const ok = live2d.lookAt(x, y)
+        return ok ? { ok: true, data: { x, y } } : { ok: false, error: 'lookAt 执行失败' }
+      }
+      case 'setParameter': {
+        const paramId = typeof params.param_id === 'string' ? params.param_id : ''
+        const value = typeof params.value === 'number' ? params.value : Number.NaN
+        const ok = paramId !== '' && Number.isFinite(value) && live2d.setParameter(paramId, value)
+        return ok
+          ? { ok: true, data: { param_id: paramId, value } }
+          : { ok: false, error: `参数 "${paramId}" 写入失败` }
+      }
+      case 'reset': {
+        const ok = live2d.reset()
+        if (ok) {
+          currentExpression = '-'
+          currentMotion = '-'
+          updateStateBar()
+        }
+        return ok ? { ok: true } : { ok: false, error: 'reset 执行失败' }
+      }
+      default:
+        return { ok: false, error: `未知命令: ${type}` }
+    }
+  })
+
+  window.__live2dCommandDebug = {
+    snapshot: () => ({
+      counts: { ...counts },
+      lastCommand,
+      lastError,
+      modelLoaded: app?.isLoaded() ?? false,
+      channelAttached: Boolean(off),
+    }),
+  }
+  if (off) {
+    console.log('[Command] main→renderer 命令通道已挂接（MCP 视觉工具可执行）')
+  } else {
+    console.warn('[Command] preload 未暴露 onCommand，命令通道不可用')
+  }
+}
+
 async function main() {
   if (isElectron) {
     // Electron 壳适配：透明窗体下去掉页面底色、状态栏变为窗口拖拽区（样式见 index.html）
@@ -374,12 +478,13 @@ async function main() {
   }
 
   if (isElectron) {
-    // Electron 一体化默认路径：F3 起 voice 事件由 main 经 preload IPC 推送（本片挂接），
-    // 表情/动作等控制事件自 F4/F5 起接入；本片不连接遗留 WS。
-    // WS 缺席绝不允许阻断模型渲染与口型驱动（SPEC §10.3 降级要求）。
+    // Electron 一体化默认路径：voice 事件由 main 经 preload IPC 推送（F3/F4），
+    // 表情/动作等视觉命令自 F5 起经 main↔renderer 命令通道执行（本片挂接）。
+    // 不连接遗留 WS；WS 缺席绝不允许阻断模型渲染与口型驱动（SPEC §10.3 降级要求）。
     initVoiceLipSync(app)
+    initCommandChannel(app)
     wsDot.classList.add('electron')
-    wsStatus.textContent = 'Electron 模式（voice 已接入，控制通道待 F4）'
+    wsStatus.textContent = 'Electron 模式（voice + MCP 命令通道已接入）'
     return
   }
 

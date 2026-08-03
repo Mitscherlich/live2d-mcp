@@ -314,7 +314,7 @@ test('/events 非 POST/OPTIONS → 405；未知路径 → 404', async () => {
   }
 })
 
-test('/mcp：本片明确未实现 → 404 JSON 标注 F5（不占位实现 tools）', async () => {
+test('/mcp：未注入 mcpHandler 时保持 404 JSON 占位', async () => {
   const { baseUrl, close } = await startBridge()
   try {
     for (const method of ['GET', 'POST', 'DELETE']) {
@@ -324,6 +324,123 @@ test('/mcp：本片明确未实现 → 404 JSON 标注 F5（不占位实现 tool
     }
   } finally {
     await close()
+  }
+})
+
+// ------------------------------------------------------------------ F5 /mcp 委托
+
+test('/mcp：注入 mcpHandler 后 POST 委托（解析后 body 透传），非 MCP 方法 405', async () => {
+  const seen = []
+  const mcpHandler = async (request, response, parsedBody) => {
+    seen.push({ method: request.method, parsedBody })
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true }))
+  }
+  const { baseUrl, close } = await startBridge({ mcpHandler })
+  try {
+    const post = await postJson(`${baseUrl}/mcp`, { jsonrpc: '2.0', id: 1, method: 'ping' })
+    assert.equal(post.status, 200)
+    assert.deepEqual(seen[0], { method: 'POST', parsedBody: { jsonrpc: '2.0', id: 1, method: 'ping' } })
+
+    // GET/DELETE 不解析 body，parsedBody 为 undefined（Streamable HTTP 会话管理用）
+    const del = await fetch(`${baseUrl}/mcp`, { method: 'DELETE' })
+    assert.equal(del.status, 200)
+    assert.deepEqual(seen[1], { method: 'DELETE', parsedBody: undefined })
+
+    const put = await fetch(`${baseUrl}/mcp`, { method: 'PUT' })
+    assert.equal(put.status, 405)
+    assert.equal(put.headers.get('allow'), 'POST, GET, DELETE')
+    assert.equal(seen.length, 2, '405 不得进入 mcpHandler')
+  } finally {
+    await close()
+  }
+})
+
+test('/mcp：Origin 校验作用于写路径（与 /events 同口径），Host 防线全局生效', async () => {
+  const mcpHandler = async (_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end('{}')
+  }
+  const { baseUrl, close } = await startBridge({ mcpHandler })
+  try {
+    const evilOrigin = await postJson(
+      `${baseUrl}/mcp`,
+      { jsonrpc: '2.0', id: 1, method: 'ping' },
+      { origin: 'https://evil.com' },
+    )
+    assert.equal(evilOrigin.status, 403)
+    assert.deepEqual(await evilOrigin.json(), { error: 'origin not allowed' })
+
+    const trusted = await postJson(
+      `${baseUrl}/mcp`,
+      { jsonrpc: '2.0', id: 1, method: 'ping' },
+      { origin: 'http://127.0.0.1:5173' },
+    )
+    assert.equal(trusted.status, 200)
+
+    // Host 校验对所有路由生效（含 /mcp）：fetch 禁改 Host，用 node:http 直发
+    const status = await new Promise((resolve, reject) => {
+      const req = http.request(
+        `${baseUrl}/mcp`,
+        { method: 'POST', headers: { host: 'evil.com', 'content-type': 'application/json' } },
+        (res) => {
+          res.resume()
+          res.on('end', () => resolve(res.statusCode))
+        },
+      )
+      req.on('error', reject)
+      req.end('{}')
+    })
+    assert.equal(status, 403)
+  } finally {
+    await close()
+  }
+})
+
+test('/mcp：body 解析失败映射 JSON-RPC 错误（坏 JSON -32700 / 超限 413 / handler 异常 500）', async () => {
+  let mode = 'ok'
+  const mcpHandler = async (_request, response) => {
+    if (mode === 'throw') throw new Error('boom')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end('{}')
+  }
+  const { baseUrl, close } = await startBridge({ mcpHandler })
+  try {
+    const badJson = await postJson(`${baseUrl}/mcp`, '{not json')
+    assert.equal(badJson.status, 400)
+    const badJsonBody = await badJson.json()
+    assert.equal(badJsonBody.jsonrpc, '2.0')
+    assert.equal(badJsonBody.error.code, -32700)
+
+    const tooLarge = await postJson(`${baseUrl}/mcp`, JSON.stringify({ pad: 'x'.repeat(MAX_BODY_BYTES) }))
+    assert.equal(tooLarge.status, 413)
+    assert.equal((await tooLarge.json()).error.code, -32000)
+
+    mode = 'throw'
+    const crashed = await postJson(`${baseUrl}/mcp`, { jsonrpc: '2.0', id: 1, method: 'ping' })
+    assert.equal(crashed.status, 500)
+    assert.equal((await crashed.json()).error.code, -32603)
+
+    // 服务存活
+    mode = 'ok'
+    const recovered = await postJson(`${baseUrl}/mcp`, { jsonrpc: '2.0', id: 1, method: 'ping' })
+    assert.equal(recovered.status, 200)
+  } finally {
+    await close()
+  }
+})
+
+test('createBridgeServer 拒绝非 loopback bind host（决策 5/6 模块边界强制）', () => {
+  for (const host of ['0.0.0.0', '192.168.1.10', 'example.com', '::']) {
+    assert.throws(
+      () => createBridgeServer({ host, onEvent: () => true }),
+      /loopback/,
+      `应拒绝 ${host}`,
+    )
+  }
+  // loopback 三形态放行
+  for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
+    assert.doesNotThrow(() => createBridgeServer({ host, port: 0, onEvent: () => true }))
   }
 })
 

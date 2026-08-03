@@ -178,9 +178,9 @@ async function runHttp() {
     })
     check('非受信 Origin → 403', evilOrigin.status === 403, `status=${evilOrigin.status}`)
 
-    console.log('[proof:http] 场景 5：/mcp 本片明确未实现（F5）')
+    console.log('[proof:http] 场景 5：/mcp 未注入 mcpHandler 时保持 404 占位（F5 前行为）')
     const mcp = await curlJson(`${base}/mcp`, { method: 'POST', data: '{}' })
-    check('/mcp → 404 且标注 F5',
+    check('/mcp（无 handler）→ 404 占位',
       mcp.status === 404 && mcp.body?.error === 'mcp not implemented (F5)',
       `status=${mcp.status} body=${mcp.raw}`)
   } finally {
@@ -302,9 +302,9 @@ async function runE2e() {
       health.body?.ok === true && health.body?.bridgePort === bridgePort)
     check('/health windowVisible:true（窗口已显示）', health.body?.windowVisible === true)
     check('/health modelReady 明确为 null（main 侧 unknown）', health.body?.modelReady === null)
-    check('/health 声明 listener 未启动（F6）与 mcp 未实现（F5）',
+    check('/health 声明 listener 未启动（F6）与 mcp 已实现（F5）',
       health.body?.listener?.status === 'not-started' &&
-        health.body?.mcp?.implemented === false)
+        health.body?.mcp?.implemented === true)
 
     const snap0 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] 初始快照:', JSON.stringify(snap0))
@@ -358,12 +358,15 @@ async function runE2e() {
     check('非法负载未进入 renderer（events 不增）', snap3.events === snap2.events,
       `events ${snap2.events} → ${snap3.events}`)
 
-    console.log('[proof:e2e] 场景 5：curl 验证 loopback 安全与 F5 占位')
+    console.log('[proof:e2e] 场景 5：curl 验证 loopback 安全与 /mcp 路由存在')
     const evilHost = await curlJson(`${base}/health`, { headers: ['Host: evil.com'] })
     check('非 loopback Host → 403', evilHost.status === 403, `status=${evilHost.status}`)
+    // F5 已挂载 Streamable HTTP MCP：/mcp 不再固定 404；无 session 的非 initialize
+    // POST 得到 JSON-RPC 错误（MCP 会话语义，详见 scripts/f5-mcp-proof.mjs）
     const mcp = await curlJson(`${base}/mcp`, { method: 'POST', data: '{}' })
-    check('/mcp → 404 标注 F5',
-      mcp.status === 404 && mcp.body?.error === 'mcp not implemented (F5)')
+    check('/mcp 不再固定 404（F5 已挂载；无 session → 400 -32000）',
+      mcp.status === 400 && mcp.body?.error?.code === -32000,
+      `status=${mcp.status} body=${mcp.raw}`)
 
     console.log('[proof:e2e] 场景 6：curl 注入 session 结束 → idle')
     await curlJson(`${base}/events`, {
