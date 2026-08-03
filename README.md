@@ -8,7 +8,7 @@
 >
 > 历史 TTS 能力（腾讯云 `speak` / `lip_sync*` 工具、字级时间轴口型、字幕链路）已彻底移除。
 
-当前处于迁移期：Electron 壳（F2）尚未落地，下述「独立 MCP Server + 浏览器渲染器」双进程流程为**遗留运行方式**，将随切片推进被 Electron 一体化默认入口取代。
+当前处于迁移期：Electron 桌面壳（F2）已落地并成为**默认入口**——`npm run dev`（Vite + Electron）/ `npm run build && npm start`（生产构建）拉起桌面角色窗；缺模型资源时窗口内给出放置指引而不崩溃（模型文件准备见下「第一步」）。bridge / MCP 一体化（F4+）尚未实现，下述「独立 MCP Server + 浏览器渲染器」双进程流程为**遗留运行方式**（`npm run dev:legacy`），将随切片推进被 Electron 一体化取代。
 
 ## 遗留架构（迁移期）
 

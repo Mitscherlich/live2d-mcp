@@ -6,9 +6,12 @@
  * 4. 更新状态栏 UI
  */
 
-import { Live2DApp } from './live2d-app.js'
+import type { Live2DApp } from './live2d-app.js'
 import { WsClient } from './ws-client.js'
 import { createCommandHandler } from './command-handler.js'
+
+// ADR 0001 · F2：Electron 壳经 preload 暴露 window.live2d；浏览器（legacy 双进程）无此对象
+const isElectron = typeof window.live2d !== 'undefined'
 
 const canvas = document.getElementById('live2d-canvas') as HTMLCanvasElement
 const wsDot = document.getElementById('ws-dot') as HTMLDivElement
@@ -242,33 +245,77 @@ function initDebugPanel(app: Live2DApp) {
   })
 }
 
+// FR-D3：缺模型 / Cubism Core 时展示引导（live2d-app.ts 的 loadModel 亦会触发，幂等）
+function showModelLoadError() {
+  const el = document.getElementById('model-load-error')
+  if (el) el.style.display = 'block'
+}
+
 async function main() {
-  // 初始化 Live2D
-  const app = new Live2DApp()
-
-  try {
-    await app.init(canvas)
-    modelDot.classList.add('connected')
-    modelStatus.textContent = '模型已加载'
-    console.log('[Main] Live2D app initialized')
-    initDebugPanel(app)
-    initMouseFollow(app)
-    initClickInteraction(app)
-
-    hitareaToggle.addEventListener('change', () => {
-      app.showHitAreaOverlay(hitareaToggle.checked)
-    })
-  } catch (e) {
-    modelStatus.textContent = '模型加载失败'
-    console.error('[Main] Failed to initialize Live2D:', e)
-    // 即使模型加载失败，也尝试连接 WS（方便调试）
+  if (isElectron) {
+    // Electron 壳适配：透明窗体下去掉页面底色、状态栏变为窗口拖拽区（样式见 index.html）
+    document.body.classList.add('electron-mode')
+    console.log(
+      `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`
+    )
   }
+
+  // 动态导入渲染核心：pixi-live2d-display/cubism4 在缺少 live2dcubismcore.min.js 时于
+  // 模块加载期抛错（"Could not find Cubism 4 runtime"）；静态 import 会带走整个入口，
+  // 缺模引导（FR-D3）将无从显示。Core 缺失与模型 404 两类失败都必须落入引导 UI。
+  let app: Live2DApp | null = null
+  try {
+    const mod = await import('./live2d-app.js')
+    app = new mod.Live2DApp()
+  } catch (e) {
+    console.error('[Main] Failed to load Live2D runtime（Cubism Core 未加载？）:', e)
+    modelStatus.textContent = '模型加载失败'
+    showModelLoadError()
+  }
+
+  if (app) {
+    const live2d = app
+    try {
+      await live2d.init(canvas)
+      modelDot.classList.add('connected')
+      modelStatus.textContent = '模型已加载'
+      console.log('[Main] Live2D app initialized')
+      initDebugPanel(live2d)
+      initMouseFollow(live2d)
+      initClickInteraction(live2d)
+
+      hitareaToggle.addEventListener('change', () => {
+        live2d.showHitAreaOverlay(hitareaToggle.checked)
+      })
+    } catch (e) {
+      modelStatus.textContent = '模型加载失败'
+      showModelLoadError()
+      console.error('[Main] Failed to initialize Live2D:', e)
+      // 即使模型加载失败，legacy 路径仍尝试连接 WS（方便调试）
+    }
+  }
+
+  if (isElectron) {
+    // Electron 一体化默认路径：F4 起由主进程经 preload IPC 推送控制事件，
+    // 本片不连接遗留 WS；WS 缺席绝不允许阻断模型渲染（SPEC §10.3 降级要求）。
+    wsDot.classList.add('electron')
+    wsStatus.textContent = 'Electron 模式（控制通道待 F4 接入）'
+    return
+  }
+
+  // 以下为 legacy 浏览器路径：连接独立 mcp-server 的 WS bridge（dev:legacy）
+  if (!app) {
+    // 渲染核心缺失（Cubism Core 未加载）：命令处理无从附着，不再连接 WS
+    wsStatus.textContent = '渲染核心未加载，未连接 WS'
+    return
+  }
+  const live2dApp = app
 
   // 初始化 WebSocket 客户端
   const wsClient = new WsClient()
 
   // 绑定命令处理器（包装一层，同时更新 UI）
-  const rawHandler = createCommandHandler(app)
+  const rawHandler = createCommandHandler(live2dApp)
   wsClient.setCommandHandler(async (command) => {
     const response = await rawHandler(command)
 
@@ -293,7 +340,7 @@ async function main() {
     wsStatus.textContent = 'WebSocket 已连接'
 
     // 发送就绪通知，携带模型信息
-    const modelInfo = app.getModelInfo()
+    const modelInfo = live2dApp.getModelInfo()
     if (modelInfo) {
       wsClient.sendReady(modelInfo)
     }

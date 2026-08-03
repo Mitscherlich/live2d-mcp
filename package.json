@@ -1,17 +1,27 @@
 {
   "name": "live2d-mcp",
   "private": true,
+  "main": "electron/main.cjs",
   "workspaces": [
     "mcp-server",
     "renderer"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:mcp-server\" \"npm run dev:renderer\"",
-    "build": "npm run build -w mcp-server && npm run build -w renderer",
+    "dev": "node scripts/dev-electron.mjs",
+    "dev:electron": "node scripts/dev-electron.mjs",
+    "start": "electron .",
+    "build": "npm run build -w mcp-server && npm run build -w renderer && npm run build:electron",
+    "build:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer-protocol.cjs",
+    "test": "node --test 'electron/test/**/*.test.cjs'",
     "dev:mcp-server": "npm run dev -w mcp-server",
-    "dev:renderer": "npm run dev -w renderer"
+    "dev:renderer": "npm run dev -w renderer",
+    "dev:legacy": "concurrently \"npm run dev:mcp-server\" \"npm run dev:renderer\""
   },
   "devDependencies": {
-    "concurrently": "^9.0.0"
+    "concurrently": "^9.0.0",
+    "electron": "39.8.10"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

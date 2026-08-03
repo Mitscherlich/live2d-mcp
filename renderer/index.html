@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Live2D MCP Renderer</title>
+    <!-- NFR-2：消除 Electron Insecure-CSP 告警。script 仅同源（无 inline/eval）；
+         style 允许 inline（本页 <style> 块）；connect 放行 legacy WS（localhost:8765）
+         与 Vite dev HMR（ws 同源端口）。live2d-app:// 自定义 scheme 下 'self' 同样成立。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; font-src 'self' data:; object-src 'none'; base-uri 'self'"
+    />
+    <title>Live2D Companion</title>
     <style>
       * {
         margin: 0;
@@ -63,6 +70,21 @@
 
       .dot.connected {
         background: #44ff88;
+      }
+
+      /* Electron 壳内控制通道指示（F4 前无 WS，用中性蓝而非断连红） */
+      .dot.electron {
+        background: #64b4ff;
+      }
+
+      /* Electron 壳（ADR 0001 F2）：透明窗体下去掉页面底色；状态栏兼作窗口拖拽区 */
+      body.electron-mode {
+        background: transparent;
+      }
+
+      body.electron-mode #status-bar {
+        background: rgba(0, 0, 0, 0.45);
+        -webkit-app-region: drag;
       }
 
       #current-state {
@@ -369,11 +391,15 @@
     </div>
 
     <div id="model-load-error">
-      <h3>模型加载失败</h3>
-      <p>请确认已将 Hiyori 模型文件放置在 <code>public/model/HiyoriPro/</code> 目录，<br/>
-      并将 <code>live2dcubismcore.min.js</code> 放置在 <code>public/</code> 目录。</p>
+      <h3>模型加载失败 / 未找到模型</h3>
+      <p>请将 Live2D Cubism 4 模型放入 <code>renderer/public/model/HiyoriPro/</code>，<br/>
+      期望入口：<code>/model/HiyoriPro/hiyori_pro_t11.model3.json</code>；<br/>
+      并将 <code>live2dcubismcore.min.js</code> 放入 <code>renderer/public/</code>。</p>
+      <p style="margin-top:8px;opacity:.85">开发模式（npm run dev）刷新即可生效；<br/>
+      生产模式（npm start）放入后需重新 <code>npm run build</code>。</p>
       <p style="margin-top:10px">
         模型下载：<a href="https://www.live2d.com/en/download/sample-data/" target="_blank">Live2D 官方示例</a>
+        ｜ Core：<a href="https://github.com/Live2D/CubismWebSamples" target="_blank">CubismWebSamples</a>
       </p>
     </div>
 
