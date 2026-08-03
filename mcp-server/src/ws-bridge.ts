@@ -17,7 +17,7 @@ const COMMAND_TIMEOUT_MS = 5000
 
 export interface Command {
   requestId: string
-  type: 'setExpression' | 'playMotion' | 'lookAt' | 'setParameter' | 'reset' | 'getInfo' | 'startSpeaking' | 'speakWithElevenLabs' | 'startLipSyncOnly' | 'lipSync'
+  type: 'setExpression' | 'playMotion' | 'lookAt' | 'setParameter' | 'reset' | 'getInfo'
   params: Record<string, unknown>
 }
 

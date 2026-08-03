@@ -303,37 +303,6 @@
 
       .debug-hitarea-label:has(input:checked) { color: #64b4ff; }
 
-      /* 字幕条 */
-      #subtitle-bar {
-        position: fixed;
-        bottom: 48px;
-        left: 50%;
-        transform: translateX(-50%);
-        max-width: 580px;
-        width: 90%;
-        pointer-events: none;
-        z-index: 60;
-        opacity: 0;
-        transition: opacity 0.3s ease;
-      }
-
-      #subtitle-bar.visible {
-        opacity: 1;
-      }
-
-      #subtitle-text {
-        background: rgba(0, 0, 0, 0.72);
-        color: #fff;
-        font-size: 15px;
-        line-height: 1.6;
-        padding: 8px 18px;
-        border-radius: 8px;
-        text-align: center;
-        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-        word-break: break-all;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        backdrop-filter: blur(4px);
-      }
     </style>
     <!-- Live2D Cubism Core（需手动下载后放到 public/ 目录） -->
     <!-- 从 https://github.com/Live2D/CubismWebSamples 下载 Core 文件 -->
@@ -397,11 +366,6 @@
           <div id="debug-click-log"></div>
         </div>
       </div>
-    </div>
-
-    <!-- 字幕条 -->
-    <div id="subtitle-bar">
-      <div id="subtitle-text"></div>
     </div>
 
     <div id="model-load-error">

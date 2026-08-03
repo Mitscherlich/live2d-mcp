@@ -12,7 +12,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "dotenv": "^17.3.1",
-    "edge-tts": "^1.0.1",
     "express": "^4.21.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"
