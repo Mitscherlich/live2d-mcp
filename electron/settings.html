@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live2D Companion 设置</title>
+    <style>
+      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; padding: 28px; background: Canvas; color: CanvasText; }
+      h1 { margin: 0 0 24px; font-size: 24px; }
+      h2 { margin: 0 0 14px; font-size: 17px; }
+      section { margin-bottom: 22px; padding: 18px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 12px; }
+      label { display: block; margin: 12px 0 6px; font-size: 13px; font-weight: 600; }
+      input, select, button { box-sizing: border-box; width: 100%; min-height: 36px; font: inherit; }
+      input, select { padding: 7px 9px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 7px; background: Canvas; color: CanvasText; }
+      button { margin-top: 12px; border: 0; border-radius: 7px; background: #3267e3; color: white; cursor: pointer; }
+      button.secondary { margin-top: 8px; background: color-mix(in srgb, CanvasText 12%, Canvas); color: CanvasText; }
+      code { display: block; overflow-wrap: anywhere; padding: 10px; border-radius: 7px; background: color-mix(in srgb, CanvasText 8%, Canvas); font-size: 12px; }
+      .meta, .hint { margin: 7px 0 0; color: color-mix(in srgb, CanvasText 65%, transparent); font-size: 12px; line-height: 1.45; }
+      .notice { padding: 9px 10px; border-radius: 7px; background: color-mix(in srgb, #d99100 18%, Canvas); font-size: 12px; line-height: 1.45; }
+      #message { min-height: 18px; font-size: 13px; }
+      #message[data-kind="success"] { color: #238636; }
+      #message[data-kind="error"] { color: #d1242f; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <h1>Live2D Companion 设置</h1>
+
+    <section>
+      <h2>MCP 连接</h2>
+      <p class="meta" id="bridge-status"></p>
+      <label>MCP URL</label>
+      <code id="mcp-url"></code>
+      <label>Codex 命令</label>
+      <code id="codex-command"></code>
+      <button class="secondary" id="copy-command" type="button">复制 codex mcp add 命令</button>
+    </section>
+
+    <section>
+      <h2>Voice source</h2>
+      <p class="meta">当前 listener：<span id="listener-status"></span></p>
+      <p class="notice" id="environment-notice" hidden>
+        检测到 LIVE2D_* voice 环境变量覆盖。这里的设置仍会保存，但当前进程继续采用环境变量；移除覆盖并重启后生效。
+      </p>
+      <form id="voice-form">
+        <label for="mode">模式</label>
+        <select id="mode">
+          <option value="automatic">automatic — 自动匹配 Codex / ChatGPT</option>
+          <option value="application">application — 指定应用 source</option>
+          <option value="custom">custom — 自定义进程正则</option>
+          <option value="external">external — 仅接受 /events</option>
+        </select>
+
+        <div id="custom-fields" hidden>
+          <label for="process-pattern">Custom process pattern</label>
+          <input id="process-pattern" maxlength="200" autocomplete="off" placeholder="例如 codex|chatgpt" />
+        </div>
+
+        <div id="application-fields" hidden>
+          <label for="source-id">Application source ID</label>
+          <input id="source-id" maxlength="2080" autocomplete="off" placeholder="process:darwin:&lt;base64url&gt;" />
+          <p class="hint">使用进程发现生成的稳定 source ID；非法或空值不会写入设置。</p>
+          <label for="source-name">Application source name</label>
+          <input id="source-name" maxlength="120" autocomplete="off" placeholder="例如 ChatGPT" />
+        </div>
+
+        <p class="hint">保存后会立即重启 listener；external 不启动原生捕获，仍可通过 loopback /events 驱动口型。</p>
+        <button type="submit">保存并应用</button>
+      </form>
+      <p id="message" role="status"></p>
+    </section>
+
+    <p class="hint">本应用不采麦克风、不提供 TTS；macOS 原生监听需要“屏幕与系统音频录制”权限。</p>
+    <script src="./settings-renderer.js"></script>
+  </body>
+</html>

@@ -2,34 +2,35 @@
 
 | 字段 | 内容 |
 |------|------|
-| 状态 | 目标架构已锁定（SPEC-0001 v1.0.0）；实现按 ADR 0001 切片推进 |
+| 状态 | ADR 0001 F1–F7 已落地；Electron 一体化为默认运行路径 |
 | 权威规格 | [`SPEC.md`](../SPEC.md)（§5 架构、§6 需求、§9 TTS 移除范围） |
 | 实现计划 | [`.adr/0001-electron-live2d-companion/plan.md`](../.adr/0001-electron-live2d-companion/plan.md)（切片 F1–F7） |
 | 参考实现（只读） | `/Users/mitscherlich/f/persona`（MIT；分层与契约借鉴，**禁止修改**，不引入其 VRM/Three 渲染栈） |
 
-> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）、F4（loopback bridge `/health` + `/events`，见 §3）、F5（Streamable HTTP MCP `/mcp` 工具面，见 §3/§5）、F6（voice source + macOS process-audio listener，见 §4.1）已落地；托盘/设置（F7）尚未实现。
+> 本文描述当前已落地架构：F1–F7 的 TTS 清除、Electron 壳、voice 口型、loopback bridge、Streamable HTTP MCP、macOS process-audio listener、系统托盘与最小设置均已实现。旧独立 `mcp-server` + 浏览器流程仅作 Legacy 降级入口。
 
 ---
 
-## 1. 现状 vs 目标
+## 1. 落地现状与架构图
 
-### 1.1 现状（F1 之后的迁移期架构）
+### 1.1 默认现状（F7 完成后的 Electron 一体化）
 
 ```
 Agent (Codex / Claude Code / …)
-    │  MCP (HTTP :3000 或 stdio)
+    │  Streamable HTTP MCP /mcp
     ▼
-mcp-server (Node.js)
-    │  WebSocket (:8765)
-    ▼
-renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
+Electron main (:47832 loopback)
+    ├── bridge /health + /events
+    ├── voice listener + settings store
+    ├── tray / window lifecycle
+    └── sandboxed preload → Live2D renderer
 ```
 
-- MCP 工具：表情 / 动作 / 参数 / 眼神 / 查询 / 重置（**已无 TTS**）。
-- 无桌面壳、无进程音频监听、无托盘/设置。
-- 该双进程形态是**遗留路径**，将随 F2–F7 被 Electron 一体化取代，不作为长期主路径维护。
+- `npm run dev` / `npm start` 均进入 Electron；托盘关闭角色窗时保活 bridge 与 renderer。
+- 设置窗展示实际 MCP URL，并将 voice source 原子写入 `userData/settings.json`；无环境覆盖时热更新 listener。
+- 旧双进程形态只由 `npm run dev:legacy` 暂留，不作为长期主路径维护。
 
-### 1.2 目标架构（Electron 一体化）
+### 1.2 当前架构（Electron 一体化）
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -139,7 +140,7 @@ F6 实现链路：`electron/main.cjs` 启动时用 `resolveVoiceSourceConfig` �
 | mode | 目标选择 | native 行为 |
 |------|----------|-------------|
 | `automatic` | 默认正则匹配 codex / chatgpt / openai 类进程；可由 env 覆盖 | macOS 启动 process tap helper |
-| `application` | `source_id=process:darwin:<base64url executable>` 精确匹配，配套 `source_name` | macOS 启动 helper；F7 再提供选择 UI |
+| `application` | `source_id=process:darwin:<base64url executable>` 精确匹配，配套 `source_name` | macOS 启动 helper；F7 设置窗提供必要字段 |
 | `custom` | 用户提供合法进程正则 | macOS 启动 helper |
 | `external` | 不枚举、不捕获进程 | listener 为 `disabled`，仅 `/events` 驱动 |
 
@@ -188,6 +189,14 @@ macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio
 
 MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路证据 `npm run proof:f5 -- --e2e`（CDP 计数坐实命令抵达 renderer；非法参数在 MCP zod 层被拒、不进 renderer）。
 
+### 4.5 托盘与设置生命周期（F7 落地）
+
+- `electron/tray.cjs` 用内置 PNG 创建托盘（macOS 使用 template image），菜单动作固定为显示角色窗、隐藏角色窗、打开设置、退出；不依赖 persona 或模型资源。
+- 有可用托盘时，角色窗 `close` 转为 `hide`，`window-all-closed` 不退出；托盘“退出”设置 quitting 状态后走 Electron 正常退出清理 bridge、MCP handler 与 listener。
+- `electron/settings-store.cjs` 将 `{ version, voiceSource }` 保存到 Electron `userData/settings.json`。候选值先经过 `sanitizeVoiceSource`，再以同目录临时文件 + rename 原子发布；非法输入不会破坏上一份配置。
+- `settings.html` 通过独立 sandbox preload 暴露的窄 IPC 读取/保存设置、复制 Codex 命令；renderer 无文件系统、clipboard 或任意 IPC 权限。
+- 设置窗的 MCP URL 优先取 bridge 实际监听端口，尚未监听时按 `LIVE2D_BRIDGE_PORT`（非法值回退 47832）展示。voice 保存后立即重启 listener；显式 `LIVE2D_*` 环境覆盖仍优先，UI 会提示需移除覆盖并重启。
+
 ---
 
 ## 5. MCP 工具面（F5 已落地）
@@ -229,12 +238,14 @@ live2d-mcp/
 │   ├── audio-activity-gate.*
 │   ├── listener-status.*
 │   ├── voice-source.*
-│   └── settings-store.*
+│   ├── settings-store.*
+│   ├── settings-view.* / settings-preload.* / settings.html
+│   └── tray.*
 ├── renderer/                    # Live2D UI（去独立 WS 依赖，改由 main 桥接）
 ├── native/
 │   ├── macos/Live2dAudioListener.mm
 │   └── bin/darwin/live2d-audio-listener
-└── (legacy mcp-server/)         # 迁移期保留，将删除或标记 deprecated
+└── (legacy mcp-server/)         # 已降级，仅 dev:legacy 暂留
 ```
 
 ---

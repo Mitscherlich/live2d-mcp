@@ -244,11 +244,28 @@ function resolveVoiceSourcePattern({ source, environment = process.env } = {}) {
   return { pattern: DEFAULT_VOICE_APP_PATTERN, warnings }
 }
 
-/** 一站式 env 配置解析（main 启动用）：source + 有效 pattern + 全部 warnings */
-function resolveVoiceSourceConfig(environment = process.env) {
-  const { source, warnings } = resolveVoiceSourceFromEnv(environment)
+/**
+ * 一站式配置解析（main 启动/热更新用）：环境 mode 明确设置时覆盖持久化 source；
+ * 否则使用已 sanitize 的持久化 source。automatic 的 pattern 仍可由既有 env 覆盖。
+ */
+function resolveVoiceSourceConfig(environment = process.env, persistedSource = DEFAULT_VOICE_SOURCE) {
+  const rawMode = environment?.LIVE2D_VOICE_SOURCE_MODE
+  const hasEnvironmentMode = typeof rawMode === 'string' && rawMode.trim().length > 0
+  const resolvedSource = hasEnvironmentMode
+    ? resolveVoiceSourceFromEnv(environment)
+    : { source: normalizeVoiceSource(persistedSource), warnings: [] }
+  const { source, warnings } = resolvedSource
   const resolved = resolveVoiceSourcePattern({ source, environment })
-  return { source, pattern: resolved.pattern, warnings: [...warnings, ...resolved.warnings] }
+  const hasPatternOverride =
+    source.mode === 'automatic' &&
+    typeof environment?.LIVE2D_TARGET_PROCESS_PATTERN === 'string' &&
+    environment.LIVE2D_TARGET_PROCESS_PATTERN.trim().length > 0
+  return {
+    source,
+    pattern: resolved.pattern,
+    warnings: [...warnings, ...resolved.warnings],
+    environmentOverridesVoice: hasEnvironmentMode || hasPatternOverride,
+  }
 }
 
 module.exports = {

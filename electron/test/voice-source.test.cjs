@@ -220,6 +220,28 @@ test('resolveVoiceSourceConfig 一站式：source + pattern + warnings 汇总', 
   assert.equal(cfg.warnings.length, 1)
 })
 
+test('resolveVoiceSourceConfig：无 mode 环境变量时读取持久化配置', () => {
+  const cfg = resolveVoiceSourceConfig({}, {
+    mode: 'custom',
+    process_pattern: 'saved-agent',
+    source_id: null,
+    source_name: null,
+  })
+  assert.equal(cfg.source.mode, 'custom')
+  assert.equal(cfg.pattern.test('saved-agent'), true)
+  assert.equal(cfg.environmentOverridesVoice, false)
+})
+
+test('resolveVoiceSourceConfig：环境 mode 明确覆盖持久化配置', () => {
+  const cfg = resolveVoiceSourceConfig(
+    { LIVE2D_VOICE_SOURCE_MODE: 'external' },
+    { mode: 'custom', process_pattern: 'saved-agent' },
+  )
+  assert.equal(cfg.source.mode, 'external')
+  assert.equal(cfg.pattern, null)
+  assert.equal(cfg.environmentOverridesVoice, true)
+})
+
 test('compileVoiceSourcePattern：空/非法回退默认', () => {
   assert.equal(compileVoiceSourcePattern(''), DEFAULT_VOICE_APP_PATTERN)
   assert.equal(compileVoiceSourcePattern('(bad'), DEFAULT_VOICE_APP_PATTERN)
