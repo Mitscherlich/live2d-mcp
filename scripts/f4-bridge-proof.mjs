@@ -104,7 +104,7 @@ async function runHttp() {
     getHealth: () => ({
       modelReady: null,
       windowVisible: true,
-      listener: { status: 'not-started', mode: 'external' },
+      listener: { status: 'disabled', mode: 'external' },
       mcp: { path: '/mcp', implemented: false },
     }),
   })
@@ -245,7 +245,12 @@ async function runE2e() {
     {
       cwd: ROOT,
       // 生产配置：不开 LIVE2D_VOICE_INJECT——证明 bridge 路径不依赖测试注入面
-      env: { ...process.env, LIVE2D_BRIDGE_PORT: String(bridgePort), LIVE2D_RENDERER_LOG: '1' },
+      env: {
+        ...process.env,
+        LIVE2D_BRIDGE_PORT: String(bridgePort),
+        LIVE2D_RENDERER_LOG: '1',
+        LIVE2D_VOICE_SOURCE_MODE: 'external',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -302,8 +307,9 @@ async function runE2e() {
       health.body?.ok === true && health.body?.bridgePort === bridgePort)
     check('/health windowVisible:true（窗口已显示）', health.body?.windowVisible === true)
     check('/health modelReady 明确为 null（main 侧 unknown）', health.body?.modelReady === null)
-    check('/health 声明 listener 未启动（F6）与 mcp 已实现（F5）',
-      health.body?.listener?.status === 'not-started' &&
+    check('/health 声明 external listener disabled（F6）且 mcp 已实现（F5）',
+      health.body?.listener?.status === 'disabled' &&
+        health.body?.listener?.mode === 'external' &&
         health.body?.mcp?.implemented === true)
 
     const snap0 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)

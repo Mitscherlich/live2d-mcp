@@ -75,7 +75,7 @@ test('GET /health：200 JSON，含 ok/bridgePort/voice 摘要与 getHealth 附�
     getHealth: () => ({
       modelReady: null,
       windowVisible: true,
-      listener: { status: 'not-started', mode: 'external' },
+      listener: { status: 'disabled', mode: 'external' },
       mcp: { path: '/mcp', implemented: false },
     }),
   })

@@ -7,7 +7,7 @@
 | 实现计划 | [`.adr/0001-electron-live2d-companion/plan.md`](../.adr/0001-electron-live2d-companion/plan.md)（切片 F1–F7） |
 | 参考实现（只读） | `/Users/mitscherlich/f/persona`（MIT；分层与契约借鉴，**禁止修改**，不引入其 VRM/Three 渲染栈） |
 
-> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）、F4（loopback bridge `/health` + `/events`，见 §3）、F5（Streamable HTTP MCP `/mcp` 工具面，见 §3/§5）已落地；voice listener（F6）、托盘/设置（F7）尚未实现。
+> 本文描述**目标架构**。当前仓库处于迁移期：F1（TTS 清除）、F2（Electron 壳）、F3（voice 状态机 → 口型，见 §4.3）、F4（loopback bridge `/health` + `/events`，见 §3）、F5（Streamable HTTP MCP `/mcp` 工具面，见 §3/§5）、F6（voice source + macOS process-audio listener，见 §4.1）已落地；托盘/设置（F7）尚未实现。
 
 ---
 
@@ -87,7 +87,7 @@ renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
 
 | 接口 | 方法 | 状态 | 说明 |
 |------|------|------|------|
-| `/health` | GET | **F4 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 前为 `not-started`）/ `mcp`（F5 起 `implemented:true` + 实际 `url`）；`modelReady` 恒 `null`（`/health` 不做 renderer 往返；模型真实状态用 MCP `get_status`，见 §5）。**不含用户内容** |
+| `/health` | GET | **F4/F6 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 起为真实 source/status，见 §4.1）/ `mcp`（F5 起 `implemented:true` + 实际 `url`）；`modelReady` 恒 `null`（`/health` 不做 renderer 往返；模型真实状态用 MCP `get_status`，见 §5）。**不含用户内容** |
 | `/events` | POST | **F4 已落地** | JSON：`state`（SPEC §8.1）/ `audio-level`（§8.2，level clamp `[0,1]`）。body 上限 64KB；过 `electron/voice-events.cjs` 权威规范化（与 F3 注入同一份校验）后调 `sendVoiceEvent` 推送到 renderer。202 `{"accepted":true}`；非法 JSON 400 / 非法事件 422 / 超限 413 |
 | `/mcp` | POST/GET/DELETE | **F5 已落地** | Streamable HTTP MCP（`electron/mcp-server.cjs`，`@modelcontextprotocol/sdk`，server 名 `live2d-companion`）。工具面见 §5。每 `initialize` 一个 session（`mcp-session-id` 头，`enableJsonResponse`）；无 session 的非 initialize POST → 400 `-32000`；body 复用 64KB 上限，坏 JSON → 400 `-32700`；其他方法 → 405；未注入 handler → 404 占位 |
 
@@ -134,6 +134,31 @@ MCP 端到端证据：`npm run proof:f5`（默认 HTTP 层：官方 SDK client �
 
 voice source 四模式：`automatic`（默认匹配 codex/chatgpt 类进程名，regex 可配置）/ `application` / `custom`（自定义 regex）/ `external`（关闭进程捕获，仅消费 `/events`）。
 
+F6 实现链路：`electron/main.cjs` 启动时用 `resolveVoiceSourceConfig` 解析配置，通过 `createAudioListener` 决定是否创建 `NativeProcessAudioListener`；native 的 `onSession` / `onActivity` / `onLevel` 全部转换成 `state` / `audio-level` 并进入同一个 `sendVoiceEvent`，与 `/events` 不存在旁路。应用 `will-quit` 时先 `stop()` listener。`/health.listener` 与 MCP `get_status.listener` 都由 `buildListenerSummary` 从最近 native 状态构造。
+
+| mode | 目标选择 | native 行为 |
+|------|----------|-------------|
+| `automatic` | 默认正则匹配 codex / chatgpt / openai 类进程；可由 env 覆盖 | macOS 启动 process tap helper |
+| `application` | `source_id=process:darwin:<base64url executable>` 精确匹配，配套 `source_name` | macOS 启动 helper；F7 再提供选择 UI |
+| `custom` | 用户提供合法进程正则 | macOS 启动 helper |
+| `external` | 不枚举、不捕获进程 | listener 为 `disabled`，仅 `/events` 驱动 |
+
+运行期环境变量：
+
+| 变量 | 说明 |
+|------|------|
+| `LIVE2D_VOICE_SOURCE_MODE` | `automatic` / `application` / `custom` / `external`；默认 `automatic` |
+| `LIVE2D_TARGET_PROCESS_PATTERN` | automatic 覆盖或 custom 正则（最多 200 字符，非法时告警并安全回退） |
+| `LIVE2D_VOICE_SOURCE_ID` / `LIVE2D_VOICE_SOURCE_NAME` | application 模式目标 |
+| `LIVE2D_NATIVE_HELPER_PATH` | native helper 绝对路径覆盖（开发/排障） |
+| `LIVE2D_LISTENER_DEBUG=1` | 输出 helper 协议排障日志；不输出音频内容 |
+
+公开 listener 状态封闭为：`disabled`（external）、`starting`、`idle`、`running`、`permission-denied`、`unavailable`、`error`。helper 缺失明确为 `unavailable/helper-missing`；Core Audio tap 创建失败且 TCC preflight 未授权时为 `permission-denied/tap-create-failed`，并提示「屏幕与系统音频录制」权限及 external 降级方式。仅缺权限或 native 不可用不会影响 bridge `/events`。
+
+macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio 回调内计算归一化峰值并通过 NDJSON 输出 level，原始样本不落盘、不上传，也不采麦克风。运行 `npm run build:native` 生成 universal `native/bin/darwin/live2d-audio-listener` 并执行 `--self-test`；应用开发态默认从该路径加载，打包态从 resources 下的 `native/darwin/` 加载。
+
+产品级证据：`npm run proof:f6` 启动真实 Electron，分别验证 external 的 `/health` + MCP status、native sentinel 未启动、`/events` 到 renderer 口型，以及 automatic helper 缺失时的同源 `unavailable/helper-missing` 状态。
+
 ### 4.2 渲染侧行为
 
 - **嘴型**：每个动画帧按当前 `level` 与 `activity === speaking` 平滑驱动嘴参（思想对齐 persona `useAmplitudeLipSync`，映射到 Live2D `ParamMouthOpenY`）。
@@ -171,7 +196,7 @@ MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路�
 
 | 工具 | 读写 | 说明 |
 |------|------|------|
-| `get_status` | 只读 | 窗口可见性、bridge 端口/URL、voice 摘要（phase/activity/lastLevel/计数，与 `/health` 同源）、listener 占位（F6 前 `not-started`）、mcp 端点、模型就绪（renderer 往返真值：`ready:true/false`，通道未挂接为 `null`）；不含用户内容 |
+| `get_status` | 只读 | 窗口可见性、bridge 端口/URL、voice 摘要（phase/activity/lastLevel/计数，与 `/health` 同源）、listener 真实模式/状态（F6，见 §4.1）、mcp 端点、模型就绪（renderer 往返真值：`ready:true/false`，通道未挂接为 `null`）；不含用户内容 |
 | `control_window` | 写 | `show` \| `hide` \| `toggle`（hide 不退出应用；窗口已关闭时 show/toggle 会重建） |
 | `get_model_info` | 只读 | 表情 / 动作组 / 参数列表（renderer 往返；无模型清晰错误） |
 | `set_expression` | 写 | 表情名 |
@@ -199,10 +224,16 @@ live2d-mcp/
 │   ├── bridge-server.*
 │   ├── mcp-server.*
 │   ├── audio-listener.*
+│   ├── native-process-audio-listener.*
+│   ├── process-discovery.*
+│   ├── audio-activity-gate.*
+│   ├── listener-status.*
 │   ├── voice-source.*
 │   └── settings-store.*
 ├── renderer/                    # Live2D UI（去独立 WS 依赖，改由 main 桥接）
-├── native/                      # 可选：macOS helper
+├── native/
+│   ├── macos/Live2dAudioListener.mm
+│   └── bin/darwin/live2d-audio-listener
 └── (legacy mcp-server/)         # 迁移期保留，将删除或标记 deprecated
 ```
 

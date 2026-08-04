@@ -141,7 +141,7 @@ async function runHttp() {
       windowVisible: state.visible,
       bridge: { port: bridge.address()?.port ?? null },
       voice: bridge.getVoiceSummary(),
-      listener: { status: 'not-started', mode: 'external' },
+      listener: { status: 'disabled', mode: 'external' },
       mcp: { path: MCP_PATH, implemented: true },
       model: state.modelLoaded ? { ready: true } : { ready: false, error: 'Live2D 模型未加载' },
     }),
@@ -169,7 +169,7 @@ async function runHttp() {
       modelReady: null,
       windowVisible: state.visible,
       voiceInject: false,
-      listener: { status: 'not-started', mode: 'external' },
+      listener: { status: 'disabled', mode: 'external' },
       mcp: {
         path: MCP_PATH,
         implemented: true,
@@ -202,7 +202,7 @@ async function runHttp() {
       status1.windowVisible === true &&
         status1.bridge?.port === address.port &&
         status1.voice?.eventsAccepted === 0 &&
-        status1.listener?.status === 'not-started' &&
+        status1.listener?.status === 'disabled' &&
         status1.mcp?.implemented === true &&
         status1.model?.ready === true)
     check('get_status 不含用户内容字段（text/transcript/audio）',
@@ -349,7 +349,12 @@ async function runE2e() {
     ['.', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${userDataDir}`, '--no-first-run'],
     {
       cwd: ROOT,
-      env: { ...process.env, LIVE2D_BRIDGE_PORT: String(bridgePort), LIVE2D_RENDERER_LOG: '1' },
+      env: {
+        ...process.env,
+        LIVE2D_BRIDGE_PORT: String(bridgePort),
+        LIVE2D_RENDERER_LOG: '1',
+        LIVE2D_VOICE_SOURCE_MODE: 'external',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -419,7 +424,8 @@ async function runE2e() {
     check('get_status bridge.port 正确', status.bridge?.port === bridgePort)
     check('get_status mcp.implemented:true 且 url 正确',
       status.mcp?.implemented === true && status.mcp?.url === `${base}${MCP_PATH}`)
-    check('get_status listener 占位 not-started（F6）', status.listener?.status === 'not-started')
+    check('get_status listener 为 external/disabled（F6）',
+      status.listener?.status === 'disabled' && status.listener?.mode === 'external')
     const modelReady = status.model?.ready
     check('get_status model.ready 为 renderer 往返真值（布尔，非 null）',
       typeof modelReady === 'boolean', JSON.stringify(status.model))

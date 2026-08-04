@@ -1,9 +1,15 @@
 'use strict'
 
 /**
- * Live2D Companion · Electron 主进程（ADR 0001 · F2 起；F3 voice 事件转发；F4 bridge；F5 MCP）
+ * Live2D Companion · Electron 主进程（ADR 0001 · F2 起；F3 voice；F4 bridge；F5 MCP；F6 listener）
  *
- * 本片（F5）新增职责：
+ * F6 新增职责：
+ *  - 从 LIVE2D_* 环境变量解析 automatic/application/custom/external voice source；
+ *  - macOS 非 external 模式启动 native process-audio listener，把 session/activity/level
+ *    回调转成与 /events 相同的 sendVoiceEvent 路径；退出时停止 listener；
+ *  - /health 与 MCP get_status 共享真实 listener 摘要，helper/权限失败清晰降级。
+ *
+ * F5 既有职责：
  *  - 在 bridge 同端口挂载 Streamable HTTP MCP（/mcp，electron/mcp-server.cjs）：
  *    get_status / control_window / get_model_info / set_expression / play_motion
  *    （+ 低成本保留 look_at / set_parameter / reset）；**无 speak/TTS 工具**；
@@ -21,9 +27,7 @@
  *  - loopback bridge（默认 127.0.0.1:47832，LIVE2D_BRIDGE_PORT 覆盖端口）：
  *    GET /health、POST /events（onEvent 即 sendVoiceEvent，与注入同路径）。
  *
- * 明确不在本片（防跨片）：
- *  - voice listener（F6）、托盘与设置窗（F7）
- *  因此 listener 状态如实报 not-started；无托盘保活，窗口关闭即退出。
+ * 明确不在本片（防跨片）：托盘与设置窗（F7）。无托盘保活，窗口关闭即退出。
  *
  * 窗口/preload 模式参考 persona（只读，MIT），未复制其 VRM/资产逻辑。
  */
@@ -56,6 +60,9 @@ const {
   normalizeCommandResultFrame,
 } = require('./renderer-commands.cjs')
 const { MCP_PATH, createLive2dMcpHandler } = require('./mcp-server.cjs')
+const { resolveVoiceSourceConfig } = require('./voice-source.cjs')
+const { createAudioListener } = require('./audio-listener.cjs')
+const { buildListenerSummary } = require('./listener-status.cjs')
 
 const WINDOW_WIDTH = 600
 const WINDOW_HEIGHT = 640
@@ -173,6 +180,87 @@ protocol.registerSchemesAsPrivileged([
 app.setName('Live2D Companion')
 
 let avatarWindow = null
+
+// ----------------------------------------------------------- F6 voice listener
+
+const voiceSourceConfig = resolveVoiceSourceConfig(process.env)
+let audioListener = null
+let nativeListenerStatus = null
+let listenerLastLevel = null
+
+/** /health 与 MCP get_status 共用的 listener 真值摘要。 */
+function listenerSummary() {
+  return buildListenerSummary({
+    mode: voiceSourceConfig.source.mode,
+    platform: process.platform,
+    native: nativeListenerStatus,
+    lastLevel: listenerLastLevel,
+  })
+}
+
+/**
+ * native listener 契约 → F3/F4 权威 voice 事件入口。
+ * session 开启先进入 active/listening；activity/level 后续按 helper 流更新。
+ */
+function startAudioListener() {
+  for (const warning of voiceSourceConfig.warnings) {
+    console.warn(`[live2d] voice source 配置：${warning}`)
+  }
+
+  audioListener = createAudioListener({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    environment: process.env,
+    voiceSource: voiceSourceConfig.source,
+    processPattern: voiceSourceConfig.pattern,
+    onSession: (active) => {
+      sendVoiceEvent(avatarWindow, {
+        type: 'state',
+        state: active
+          ? { phase: 'active', activity: 'listening' }
+          : { phase: 'inactive', activity: 'idle' },
+      })
+    },
+    onActivity: (activity) => {
+      sendVoiceEvent(avatarWindow, { type: 'state', state: { activity } })
+    },
+    onLevel: (level) => {
+      listenerLastLevel = level
+      sendVoiceEvent(avatarWindow, { type: 'audio-level', level })
+    },
+    onStatus: (status) => {
+      nativeListenerStatus = status
+      const summary = listenerSummary()
+      console.log(`[live2d] voice listener: ${summary.mode}/${summary.status}${summary.detail ? ` (${summary.detail})` : ''}`)
+    },
+    onDebug: (message, detail) => {
+      if (process.env.LIVE2D_LISTENER_DEBUG === '1') {
+        console.warn(`[live2d] ${message}: ${String(detail).trim().slice(0, 500)}`)
+      }
+    },
+  })
+
+  if (!audioListener) {
+    const summary = listenerSummary()
+    console.log(`[live2d] voice listener: ${summary.mode}/${summary.status}${summary.detail ? ` (${summary.detail})` : ''}`)
+    return
+  }
+
+  void audioListener.start().catch((error) => {
+    nativeListenerStatus = {
+      available: false,
+      capturing: false,
+      monitoring: false,
+      source: null,
+      matched: 0,
+      detail: 'startup-failed',
+      error: error instanceof Error ? error.message : String(error),
+      permissionHint: null,
+    }
+    console.error(`[live2d] voice listener 启动失败：${nativeListenerStatus.error}`)
+  })
+}
 
 /** 贴到光标所在显示器工作区右下角（参考 persona positionWindow） */
 function positionWindow(win) {
@@ -314,6 +402,7 @@ if (!gotSingleInstanceLock) {
       `（入口 ${MODEL_ENTRY_HINT}），并将 live2dcubismcore.min.js 放入 renderer/public/；`)
     console.log('[live2d] 缺模型时窗口内显示引导而不会崩溃（生产模式放入后需重新 npm run build）')
     createWindow()
+    startAudioListener()
     void startBridge()
   })
 }
@@ -338,7 +427,7 @@ function bridgeHealthExtra() {
     modelReady: null,
     windowVisible: Boolean(win && !win.isDestroyed() && win.isVisible()),
     voiceInject: voiceInjectEnabled,
-    listener: { status: 'not-started', mode: 'external' }, // F6 落地 native listener
+    listener: listenerSummary(),
     mcp: {
       path: MCP_PATH,
       implemented: true,
@@ -401,7 +490,7 @@ async function mcpStatus() {
       url: port === null ? null : `http://${BRIDGE_HOST}:${port}`,
     },
     voice: bridge?.getVoiceSummary() ?? null,
-    listener: { status: 'not-started', mode: 'external' }, // F6 占位，如实标注
+    listener: listenerSummary(),
     mcp: {
       path: MCP_PATH,
       implemented: true,
@@ -462,6 +551,10 @@ async function startBridge() {
 }
 
 app.on('will-quit', () => {
+  if (audioListener) {
+    audioListener.stop()
+    audioListener = null
+  }
   if (mcpHandler) {
     const handler = mcpHandler
     mcpHandler = null

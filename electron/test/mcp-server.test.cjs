@@ -70,7 +70,7 @@ function makeController({ modelLoaded = true } = {}) {
         windowVisible: visible,
         bridge: { port: 47832, url: 'http://127.0.0.1:47832' },
         voice: { phase: 'active', activity: 'speaking', lastLevel: 0.8 },
-        listener: { status: 'not-started', mode: 'external' },
+        listener: { status: 'disabled', mode: 'external' },
         mcp: { path: '/mcp', implemented: true },
         model: modelLoaded ? { ready: true, expressions: 3 } : { ready: false, error: '模型未加载' },
       }
@@ -179,7 +179,7 @@ test('get_status 返回窗口/bridge/voice/listener/mcp/model 聚合（只读，
     assert.equal(status.windowVisible, true)
     assert.equal(status.bridge.port, 47832)
     assert.equal(status.voice.activity, 'speaking')
-    assert.equal(status.listener.status, 'not-started')
+    assert.equal(status.listener.status, 'disabled')
     assert.equal(status.mcp.implemented, true)
     assert.equal(status.model.ready, true)
     assert.deepEqual(controller.calls, [['get_status']])
