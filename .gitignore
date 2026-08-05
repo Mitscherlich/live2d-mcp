@@ -8,3 +8,6 @@ package-lock.json
 npm-debug.log*
 yarn.lock
 pnpm-lock.yaml
+
+# ADR 过程产物（plan/progress/runner logs），不入库
+.adr/
