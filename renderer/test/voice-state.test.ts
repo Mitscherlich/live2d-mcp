@@ -1,7 +1,7 @@
 /**
  * voice-state.ts 单测（ADR 0001 · F3）
  *
- * 运行：根 package.json `npm test`（Node ≥22.6 type-stripping 直接加载 .ts）。
+ * 运行：根 package.json `bun test`（Node ≥22.6 type-stripping 直接加载 .ts）。
  * 覆盖：activity 状态机（idle/listening/speaking）、level clamp、
  * 900ms 短静音保持、平滑曲线、嘴参别名解析。
  */

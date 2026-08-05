@@ -11,18 +11,20 @@ Electron 桌面 Live2D 陪伴应用：监听 Codex / ChatGPT 等 agent 进程的
 
 ## 快速开始（Electron 默认路径）
 
-需要 Node.js 20+ 与 npm；macOS 是当前原生 voice listener 的优先平台。
+需要 [Bun](https://bun.sh) 1.1+（以及 Node.js 20+ 以运行 Electron / `node:test`）；macOS 是当前原生 voice listener 的优先平台。
 
 ### 1. 安装依赖
 
 ```bash
-npm install
+bun install
 ```
 
 ### 2. 准备 Cubism Core 与模型
 
-1. 从 [Live2D Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) 取得 `Core/live2dcubismcore.min.js`，放入 `renderer/public/`。
-2. 从 [Live2D 示例模型](https://www.live2d.com/en/download/sample-data/) 下载 HiyoriPro，完整放入 `renderer/public/model/HiyoriPro/`。
+1. 取得 **Cubism Core 4.x** 的 `live2dcubismcore.min.js`，放入 `renderer/public/`。  
+   - 本项目使用 `pixi-live2d-display` 的 Cubism4 运行时，**请勿使用 Cubism 5 SDK 的 Core 6.x**（会加载成功但画面空白，并可能在渲染时报错）。  
+   - 推荐：Cubism SDK for Web **4-r.x** 的 `Core/live2dcubismcore.min.js`，或与 pixi-live2d-display 示例配套的 4.2 Core。
+2. 从 [Live2D 示例模型](https://www.live2d.com/en/download/sample-data/) 下载 HiyoriPro，将 **runtime** 内容放入 `renderer/public/model/HiyoriPro/`（需含 `hiyori_pro_t11.model3.json` 与贴图/motion）。
 
 目录应为：
 
@@ -35,21 +37,21 @@ renderer/public/
         └── ...
 ```
 
-缺少这些资源不会让应用硬崩；角色窗会显示准备指引。生产构建在补齐资源后需要重新执行 `npm run build`。
+缺少这些资源不会让应用硬崩；角色窗会显示准备指引。生产构建在补齐资源后需要重新执行 `bun run build`。
 
 ### 3. 启动桌面应用
 
 开发模式（Vite + Electron）：
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 生产构建与启动：
 
 ```bash
-npm run build
-npm start
+bun run build
+bun start
 ```
 
 启动后系统托盘提供“显示角色窗”“隐藏角色窗”“打开设置”“退出”。关闭角色窗只会隐藏它，应用和 MCP bridge 由托盘保活；请从托盘“退出”结束应用。
@@ -67,7 +69,7 @@ codex mcp add live2d --url http://127.0.0.1:47832/mcp
 若设置了自定义端口：
 
 ```bash
-LIVE2D_BRIDGE_PORT=49000 npm run dev
+LIVE2D_BRIDGE_PORT=49000 bun run dev
 codex mcp add live2d --url http://127.0.0.1:49000/mcp
 ```
 
@@ -106,6 +108,19 @@ curl -s -X POST http://127.0.0.1:47832/events \
 | `LIVE2D_VOICE_SOURCE_NAME` | application 展示名 |
 | `LIVE2D_NATIVE_HELPER_PATH` | macOS native helper 路径覆盖（排障用） |
 | `LIVE2D_LISTENER_DEBUG=1` | 输出 listener 协议诊断，不输出音频内容 |
+| `LIVE2D_UI_CHROME=1` | Electron 角色窗显示顶部状态栏 + 底部调试条（默认隐藏） |
+| `LIVE2D_DEVTOOLS=1` | 打开 DevTools，并同时显示角色窗工具条 |
+| `LIVE2D_RENDERER_LOG=1` | 把 renderer `console` 汇入终端（**不**打开工具条） |
+
+### 角色窗 UI 工具条
+
+- **Electron 默认**：隐藏顶栏/底栏，只保留角色与透明背景（顶部仍有隐形拖拽区可移动窗口）。
+- **Web / `bun run dev:legacy`**：始终显示状态栏与调试抽屉。
+- **调试时打开工具条**（任选其一）：
+  - `LIVE2D_UI_CHROME=1 bun run dev`
+  - 或 URL 加 `?debug=1` / `?ui=1`
+  - 或 DevTools：`LIVE2D_DEVTOOLS=1 bun run dev`
+  - 或在 renderer 控制台：`localStorage.setItem('live2d.uiChrome','1'); location.reload()`
 
 设置窗检测到环境变量覆盖时会明确提示：表单仍会持久化，但当前进程继续采用环境变量；移除覆盖并重启后才使用已保存值。
 
@@ -118,7 +133,7 @@ curl -s -X POST http://127.0.0.1:47832/events \
 如需从源码构建 macOS universal helper：
 
 ```bash
-npm run build:native
+bun run build:native
 ```
 
 ## MCP 工具
@@ -139,19 +154,21 @@ npm run build:native
 ## 验证
 
 ```bash
-npm run build
-npm test
-npm run proof:f4
-npm run proof:f5
-npm run proof:f6
+bun run build
+bun run test
+bun run proof:f4
+bun run proof:f5
+bun run proof:f6
 ```
+
+> 请使用 `bun run test` 执行本仓库 `package.json` 中的 `node:test` 套件。裸命令 `bun test` 会进入 Bun 内置测试器，与本仓库脚本无关。
 
 ## Legacy / 已降级
 
 旧的“独立 `mcp-server`（`:3000`）+ 浏览器 renderer（`:5173` / WS `:8765`）”双进程架构仅在迁移期保留，不再是快速开始或长期维护主路径。确需排查遗留兼容时运行：
 
 ```bash
-npm run dev:legacy
+bun run dev:legacy
 ```
 
 新接入请始终使用 Electron 与 `http://127.0.0.1:47832/mcp`。

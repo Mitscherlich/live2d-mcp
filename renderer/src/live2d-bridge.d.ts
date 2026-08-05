@@ -37,6 +37,8 @@ declare global {
     live2d?: {
       isElectron: true
       platform: string
+      /** true：显示顶栏/底栏调试 UI（LIVE2D_UI_CHROME / RENDERER_LOG / DEVTOOLS） */
+      uiChrome?: boolean
       versions: {
         electron?: string
         chrome?: string

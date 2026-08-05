@@ -4,7 +4,7 @@
  *
  * 用法：
  *   node scripts/f5-mcp-proof.mjs          # http 模式（默认，无 GUI 依赖）
- *   node scripts/f5-mcp-proof.mjs --e2e    # http + 真 Electron 端到端（需 GUI；先 npm run build）
+ *   node scripts/f5-mcp-proof.mjs --e2e    # http + 真 Electron 端到端（需 GUI；先 bun run build）
  *
  * http 模式：进程内 bridge（注入真 mcpHandler + stub controller），用官方
  *   @modelcontextprotocol/sdk client（StreamableHTTPClientTransport）打 /mcp：
@@ -335,7 +335,7 @@ function connectCdp(wsUrl) {
 async function runE2e() {
   const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
   if (!fs.existsSync(distIndex)) {
-    throw new Error('renderer/dist/index.html 不存在，请先运行 npm run build')
+    throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
   }
   const bridgePort = await getFreePort()
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f5-e2e-'))

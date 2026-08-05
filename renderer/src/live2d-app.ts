@@ -1,14 +1,22 @@
 /**
  * Live2D 应用核心 - 基于 pixi-live2d-display
  *
- * 需要 Live2D Cubism Core 已通过 <script> 标签加载
+ * 需要 Live2D Cubism Core 已通过 <script> 标签加载。
+ * Electron CSP 禁用 unsafe-eval：用 @pixi/unsafe-eval 的 install 补丁，
+ * 避免 PIXI ShaderSystem 走 new Function。
  */
 
 import * as PIXI from 'pixi.js'
+import { install as installPixiUnsafeEval } from '@pixi/unsafe-eval'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
 
-// pixi-live2d-display 需要访问全局 PIXI
+// 必须在创建 PIXI.Application 之前 install
+installPixiUnsafeEval(PIXI)
+
+// pixi-live2d-display 需要访问全局 PIXI，并用同一 Ticker 驱动 autoUpdate
 ;(window as unknown as Record<string, unknown>).PIXI = PIXI
+// 注册 Application 使用的 Ticker 类，避免 shared/app ticker 不一致导致模型不刷新
+Live2DModel.registerTicker(PIXI.Ticker)
 
 export interface ModelInfo {
   expressions: string[]
@@ -33,6 +41,8 @@ export class Live2DApp {
   private hitAreaGraphics: PIXI.Graphics | null = null
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
+    // Electron 透明窗 + WebGL：需要 alpha 通道与 premultipliedAlpha，
+    // 并保留 drawing buffer 便于诊断；backgroundAlpha=0 适配透明窗体。
     this.app = new PIXI.Application({
       view: canvas,
       width: 600,
@@ -41,7 +51,14 @@ export class Live2DApp {
       antialias: true,
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
+      // 透明窗口下默认 clear 可能与合成器叠加异常；强制 RGBA clear
+      clearBeforeRender: true,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance',
     })
+
+    // 暴露诊断句柄（仅开发/排障）
+    ;(canvas as unknown as { __PIXI_APP?: PIXI.Application }).__PIXI_APP = this.app
 
     await this.loadModel()
   }
@@ -54,27 +71,75 @@ export class Live2DApp {
         autoInteract: false,  // 关闭自动鼠标交互，由 MCP 控制
       })
 
+      // 等待至少一帧，确保 mesh/bounds 就绪（部分 Core/显卡组合首次 width/height 为 0）
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve())
+      })
+      this.model.update(0)
+
+      const rawW = this.model.width || this.model.getBounds?.(true)?.width || 0
+      const rawH = this.model.height || this.model.getBounds?.(true)?.height || 0
+      // 部分环境下 getBounds 更可靠；若仍为 0，用合理默认防止 scale=Infinity/0
+      const modelW = rawW > 1 ? rawW : 1000
+      const modelH = rawH > 1 ? rawH : 1500
+
       this.model.anchor.set(0.5, 0.5)
       this.model.position.set(this.app.screen.width / 2, this.app.screen.height / 2)
 
       // 自适应缩放
-      const scale = Math.min(
-        this.app.screen.width / this.model.width,
-        this.app.screen.height / this.model.height
-      ) * 0.9
+      const scale =
+        Math.min(this.app.screen.width / modelW, this.app.screen.height / modelH) * 0.9
       this.model.scale.set(scale)
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       this.app.stage.addChild(this.model as any)
 
+      // 强制用 app.ticker 驱动模型更新（与渲染同一条 ticker，避免空白画布）
+      this.model.autoUpdate = false
+      this.app.ticker.add(() => {
+        if (!this.model) return
+        try {
+          this.model.update(this.app!.ticker.deltaMS)
+        } catch (err) {
+          // 单帧失败不炸掉 ticker；打一次日志
+          if (!(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged) {
+            ;(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged = true
+            console.error('[Live2D] model.update failed:', err)
+          }
+        }
+      })
+
+      // 播放默认 Idle，避免 T 姿势/静止不可见
+      try {
+        this.model.motion('Idle')
+      } catch {
+        /* Idle 不存在时忽略 */
+      }
+
       // 收集模型信息
       this.modelInfo = this.extractModelInfo()
 
-      console.log('[Live2D] Model loaded:', MODEL_PATH)
+      const bounds = this.model.getBounds(true)
+      console.log('[Live2D] Model loaded:', MODEL_PATH, {
+        screen: { w: this.app.screen.width, h: this.app.screen.height },
+        modelSize: { rawW, rawH, modelW, modelH },
+        scale,
+        pos: { x: this.model.position.x, y: this.model.position.y },
+        bounds: { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height },
+        paramCount: this.modelInfo?.parameters?.length ?? 0,
+        motions: this.modelInfo?.motionGroups,
+      })
       console.log('[Live2D] Model info:', this.modelInfo)
     } catch (e) {
       console.error('[Live2D] Failed to load model:', e)
-      document.getElementById('model-load-error')!.style.display = 'block'
+      const panel = document.getElementById('model-load-error')
+      if (panel) {
+        panel.style.display = 'block'
+        const detail = panel.querySelector('[data-error-detail]')
+        if (detail) {
+          detail.textContent = e instanceof Error ? e.message : String(e)
+        }
+      }
       throw e
     }
   }
@@ -99,24 +164,59 @@ export class Live2DApp {
       motionGroups[group] = Array.isArray(motions) ? motions.length : 0
     }
 
-    // 提取参数列表（从 Cubism Core）
+    // 提取参数列表：优先 Core parameters 表；否则从 model3 Groups / lipSyncIds 兜底
+    // （Cubism Core + Framework 组合下 coreModel.parameters 可能不可枚举）
     const parameters: ParameterInfo[] = []
+    const seen = new Set<string>()
+    const pushParam = (id: string, min = 0, max = 1, defaultValue = 0) => {
+      if (!id || seen.has(id)) return
+      seen.add(id)
+      parameters.push({ id, name: id, min, max, defaultValue })
+    }
     try {
-      const coreModel = (internalModel as unknown as { coreModel: { parameters: { count: number; ids: string[]; minimumValues: number[]; maximumValues: number[]; defaultValues: number[] } } }).coreModel
+      const coreModel = (
+        internalModel as unknown as {
+          coreModel?: {
+            parameters?: {
+              count: number
+              ids: ArrayLike<string>
+              minimumValues: ArrayLike<number>
+              maximumValues: ArrayLike<number>
+              defaultValues: ArrayLike<number>
+            }
+          }
+        }
+      ).coreModel
       const params = coreModel?.parameters
-      if (params) {
+      if (params && params.count > 0 && params.ids) {
         for (let i = 0; i < params.count; i++) {
-          parameters.push({
-            id: params.ids[i],
-            name: params.ids[i],
-            min: params.minimumValues[i],
-            max: params.maximumValues[i],
-            defaultValue: params.defaultValues[i],
-          })
+          pushParam(
+            String(params.ids[i]),
+            Number(params.minimumValues?.[i] ?? 0),
+            Number(params.maximumValues?.[i] ?? 1),
+            Number(params.defaultValues?.[i] ?? 0),
+          )
         }
       }
     } catch (e) {
-      console.warn('[Live2D] Could not extract parameters:', e)
+      console.warn('[Live2D] Could not extract parameters from coreModel:', e)
+    }
+    // Groups（LipSync / EyeBlink 等）
+    const groups =
+      (settings['Groups'] as Array<{ Name?: string; Ids?: string[] }> | undefined) ?? []
+    for (const g of groups) {
+      for (const id of g.Ids ?? []) pushParam(id)
+    }
+    // Framework lipSync / eyeBlink id 列表
+    try {
+      const im = internalModel as unknown as {
+        getLipSyncIds?: () => string[]
+        getEyeBlinkIds?: () => string[]
+      }
+      for (const id of im.getLipSyncIds?.() ?? []) pushParam(id)
+      for (const id of im.getEyeBlinkIds?.() ?? []) pushParam(id)
+    } catch {
+      /* ignore */
     }
 
     return { expressions, motionGroups, parameters }

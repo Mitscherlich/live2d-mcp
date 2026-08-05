@@ -39,6 +39,10 @@ const COMMAND_TYPES = new Set([
 
 const VALID_EVENT_TYPES = new Set(['state', 'audio-level'])
 const injectEnabled = process.argv.includes(VOICE_INJECT_ARG)
+// 调试工具条：main 以 LIVE2D_UI_CHROME / LIVE2D_DEVTOOLS / --live2d-ui-chrome 启动时透传
+// （LIVE2D_RENDERER_LOG 不打开工具条，只打终端日志）
+const UI_CHROME_ARG = '--live2d-ui-chrome'
+const uiChromeEnabled = process.argv.includes(UI_CHROME_ARG)
 
 /** 浅校验：仅放行可识别的 voice 事件形状（钳制/枚举校验由 main 权威执行） */
 function isVoiceEventShape(raw) {
@@ -67,6 +71,8 @@ function isCommandFrameShape(raw) {
 const api = {
   isElectron: true,
   platform: process.platform,
+  /** true 时 renderer 显示顶部状态栏 + 底部调试条（仅调试） */
+  uiChrome: uiChromeEnabled,
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,

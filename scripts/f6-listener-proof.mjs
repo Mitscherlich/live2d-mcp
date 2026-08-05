@@ -303,7 +303,7 @@ async function runMissingHelperScenario(tempDir) {
 
 const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
 if (!fs.existsSync(distIndex)) {
-  throw new Error('renderer/dist/index.html 不存在，请先运行 npm run build')
+  throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
 }
 await execFileP('curl', ['--version'])
 

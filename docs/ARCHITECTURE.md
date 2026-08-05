@@ -26,9 +26,10 @@ Electron main (:47832 loopback)
     └── sandboxed preload → Live2D renderer
 ```
 
-- `npm run dev` / `npm start` 均进入 Electron；托盘关闭角色窗时保活 bridge 与 renderer。
+- 包管理与脚本入口为 **Bun**（`packageManager: bun@…`，锁文件 `bun.lock`）。安装用 `bun install`，任务用 `bun run …`。测试请用 `bun run test`（`node:test` 套件）；勿用裸 `bun test`（会进 Bun 内置测试器）。Electron 与 `node --check` / `node --test` 仍走 Node 兼容运行时。
+- `bun run dev` / `bun start` 均进入 Electron；托盘关闭角色窗时保活 bridge 与 renderer。
 - 设置窗展示实际 MCP URL，并将 voice source 原子写入 `userData/settings.json`；无环境覆盖时热更新 listener。
-- 旧双进程形态只由 `npm run dev:legacy` 暂留，不作为长期主路径维护。
+- 旧双进程形态只由 `bun run dev:legacy` 暂留，不作为长期主路径维护。
 
 ### 1.2 当前架构（Electron 一体化）
 
@@ -111,7 +112,7 @@ curl -s -X POST http://127.0.0.1:47832/events \
 # → 202 {"accepted":true}；renderer 口型目标随 level 驱动（证据：scripts/f4-bridge-proof.mjs）
 ```
 
-端到端证据：`npm run proof:f4`（默认 HTTP 层：curl → bridge → onEvent 与权威规范化同源；`--e2e` 追加真 Electron + curl 注入 + CDP 快照断言口型变化）。
+端到端证据：`bun run proof:f4`（默认 HTTP 层：curl → bridge → onEvent 与权威规范化同源；`--e2e` 追加真 Electron + curl 注入 + CDP 快照断言口型变化）。
 
 MCP 连接示例（F5 已生效，应用运行中）：
 
@@ -120,7 +121,7 @@ codex mcp add live2d --url http://127.0.0.1:47832/mcp
 ```
 
 Claude Code / Hermes 使用同一 URL（按其 MCP 配置格式，SPEC §8.4）。
-MCP 端到端证据：`npm run proof:f5`（默认 HTTP 层：官方 SDK client → tools/list + read/write 调用 + 非法参数拒绝 + 缺模降级；`--e2e` 追加真 Electron：control_window 真实作用窗口、set_expression 经 CDP 快照坐实抵达 renderer）。
+MCP 端到端证据：`bun run proof:f5`（默认 HTTP 层：官方 SDK client → tools/list + read/write 调用 + 非法参数拒绝 + 缺模降级；`--e2e` 追加真 Electron：control_window 真实作用窗口、set_expression 经 CDP 快照坐实抵达 renderer）。
 
 ---
 
@@ -156,9 +157,9 @@ F6 实现链路：`electron/main.cjs` 启动时用 `resolveVoiceSourceConfig` �
 
 公开 listener 状态封闭为：`disabled`（external）、`starting`、`idle`、`running`、`permission-denied`、`unavailable`、`error`。helper 缺失明确为 `unavailable/helper-missing`；Core Audio tap 创建失败且 TCC preflight 未授权时为 `permission-denied/tap-create-failed`，并提示「屏幕与系统音频录制」权限及 external 降级方式。仅缺权限或 native 不可用不会影响 bridge `/events`。
 
-macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio 回调内计算归一化峰值并通过 NDJSON 输出 level，原始样本不落盘、不上传，也不采麦克风。运行 `npm run build:native` 生成 universal `native/bin/darwin/live2d-audio-listener` 并执行 `--self-test`；应用开发态默认从该路径加载，打包态从 resources 下的 `native/darwin/` 加载。
+macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio 回调内计算归一化峰值并通过 NDJSON 输出 level，原始样本不落盘、不上传，也不采麦克风。运行 `bun run build:native` 生成 universal `native/bin/darwin/live2d-audio-listener` 并执行 `--self-test`；应用开发态默认从该路径加载，打包态从 resources 下的 `native/darwin/` 加载。
 
-产品级证据：`npm run proof:f6` 启动真实 Electron，分别验证 external 的 `/health` + MCP status、native sentinel 未启动、`/events` 到 renderer 口型，以及 automatic helper 缺失时的同源 `unavailable/helper-missing` 状态。
+产品级证据：`bun run proof:f6` 启动真实 Electron，分别验证 external 的 `/health` + MCP status、native sentinel 未启动、`/events` 到 renderer 口型，以及 automatic helper 缺失时的同源 `unavailable/helper-missing` 状态。
 
 ### 4.2 渲染侧行为
 
@@ -175,7 +176,7 @@ macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio
 | preload 窄 API | `electron/preload.cjs` | `window.live2d.onVoiceEvent(cb)`（浅校验 type 白名单后转发，返回取消订阅）；不暴露任意 IPC |
 | renderer 消费 | `renderer/src/main.ts` → `lip-sync.ts` → `voice-state.ts` | 状态机 + 平滑 + 嘴参解析（`ParamMouthOpenY` 或别名，缺模型/缺参 no-op）；PIXI ticker LOW 优先级写入（motion 之后、当帧渲染生效） |
 
-**测试注入（仅开发/测试）**：以 `LIVE2D_VOICE_INJECT=1`（或 CLI `--live2d-voice-inject`）启动 main 时，preload 经 `additionalArguments` 检测标志后额外暴露 `window.live2d.injectVoice(payload)`；该调用经 IPC `live2d:voice-inject` 回到 main，**过同一 `normalizeVoiceEvent`** 后再经 `live2d:voice` 送回 renderer——注入与真实推送走完全相同的 renderer 路径。未开标志时 `injectVoice` 不存在（生产无注入面）。调试快照 `window.__live2dVoiceDebug.snapshot()`（activity / smoothedMouth / mouthWrites / events 等）供脚本断言，证据脚本：`scripts/f3-lipsync-proof.mjs`（`npm run proof:f3`，`--e2e` 走 CDP 端到端）。
+**测试注入（仅开发/测试）**：以 `LIVE2D_VOICE_INJECT=1`（或 CLI `--live2d-voice-inject`）启动 main 时，preload 经 `additionalArguments` 检测标志后额外暴露 `window.live2d.injectVoice(payload)`；该调用经 IPC `live2d:voice-inject` 回到 main，**过同一 `normalizeVoiceEvent`** 后再经 `live2d:voice` 送回 renderer——注入与真实推送走完全相同的 renderer 路径。未开标志时 `injectVoice` 不存在（生产无注入面）。调试快照 `window.__live2dVoiceDebug.snapshot()`（activity / smoothedMouth / mouthWrites / events 等）供脚本断言，证据脚本：`scripts/f3-lipsync-proof.mjs`（`bun run proof:f3`，`--e2e` 走 CDP 端到端）。
 
 ### 4.4 命令通道（F5 落地，MCP 视觉工具执行路径）
 
@@ -187,7 +188,7 @@ macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio
 | preload 窄 API | `electron/preload.cjs` | `window.live2d.onCommand(handler)`（帧形状浅校验 + handler 异常兜底；sandbox 限制下内联常量，与 renderer-commands.cjs 同步） |
 | renderer 执行 | `renderer/src/main.ts` `initCommandChannel` | 映射到 `Live2DApp`（表情/动作/视线/参数/重置/模型信息）；**无模型时 `{ ok:false, error }` 清晰降级不崩溃**；调试快照 `window.__live2dCommandDebug.snapshot()`（counts / lastCommand / modelLoaded）供 proof 断言 |
 
-MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路证据 `npm run proof:f5 -- --e2e`（CDP 计数坐实命令抵达 renderer；非法参数在 MCP zod 层被拒、不进 renderer）。
+MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路证据 `bun run proof:f5 -- --e2e`（CDP 计数坐实命令抵达 renderer；非法参数在 MCP zod 层被拒、不进 renderer）。
 
 ### 4.5 托盘与设置生命周期（F7 落地）
 
@@ -216,7 +217,7 @@ MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路�
 
 Server instructions 已声明：本应用**不说话、不播放 agent 音频**、无任何 TTS/语音工具，仅提供视觉表现与窗口控制（SPEC §6.4 强制项）。**禁止工具** `speak` / `lip_sync*` / TTS 封装未注册、不可发现（proof 与单测均含否定断言）。
 
-调用证据：`npm run proof:f5`（HTTP 层）与 `node scripts/f5-mcp-proof.mjs --e2e`（真 Electron：tools/list、get_status、control_window 真实作用于窗口、set_expression 经 CDP 坐实抵达 renderer）。
+调用证据：`bun run proof:f5`（HTTP 层）与 `node scripts/f5-mcp-proof.mjs --e2e`（真 Electron：tools/list、get_status、control_window 真实作用于窗口、set_expression 经 CDP 坐实抵达 renderer）。
 
 ---
 

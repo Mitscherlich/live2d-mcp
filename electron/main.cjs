@@ -107,6 +107,14 @@ const VOICE_INJECT_ARG = '--live2d-voice-inject'
 const voiceInjectEnabled =
   process.env.LIVE2D_VOICE_INJECT === '1' || process.argv.includes(VOICE_INJECT_ARG)
 
+// 角色窗 UI 工具条（顶栏/底栏）：Electron 默认隐藏，仅 Web / 显式调试开关显示。
+// 注意：LIVE2D_RENDERER_LOG 只把 console 打到终端，不强制显示工具条。
+const UI_CHROME_ARG = '--live2d-ui-chrome'
+const uiChromeEnabled =
+  process.env.LIVE2D_UI_CHROME === '1' ||
+  process.env.LIVE2D_DEVTOOLS === '1' ||
+  process.argv.includes(UI_CHROME_ARG)
+
 /**
  * 向 renderer 推送一条 voice 事件（F4 bridge /events 的 onEvent 即调用本函数；
  * F3 注入回环亦同）。负载先过权威规范化（electron/voice-events.cjs），
@@ -288,13 +296,22 @@ function startAudioListener() {
     onLevel: (level) => {
       if (audioListener !== listener) return
       listenerLastLevel = level
+      // 调试：仅打印「助手出声」相关的非静音电平（Codex 播放，非用户麦克风）
+      if (process.env.LIVE2D_LISTENER_DEBUG === '1' && level > 0.01) {
+        console.log(`[live2d] native assistant level=${level.toFixed(3)}`)
+      }
       sendVoiceEvent(avatarWindow, { type: 'audio-level', level })
     },
     onStatus: (status) => {
       if (audioListener !== listener) return
       nativeListenerStatus = status
       const summary = listenerSummary()
-      console.log(`[live2d] voice listener: ${summary.mode}/${summary.status}${summary.detail ? ` (${summary.detail})` : ''}`)
+      console.log(
+        `[live2d] voice listener: ${summary.mode}/${summary.status}` +
+          `${summary.detail ? ` (${summary.detail})` : ''}` +
+          `${summary.lastLevel != null ? ` lastLevel=${summary.lastLevel}` : ''}` +
+          `${summary.matched != null ? ` matched=${summary.matched}` : ''}`,
+      )
       notifySettingsChanged()
     },
     onDebug: (message, detail) => {
@@ -351,7 +368,15 @@ function positionWindow(win) {
 }
 
 function rendererUrl() {
-  return isDev ? DEV_SERVER_URL : `${RENDERER_ORIGIN}/`
+  const base = isDev ? DEV_SERVER_URL || 'http://127.0.0.1:5173/' : `${RENDERER_ORIGIN}/`
+  if (!uiChromeEnabled) return base
+  try {
+    const url = new URL(base)
+    url.searchParams.set('debug', '1')
+    return url.href
+  } catch {
+    return base
+  }
 }
 
 /** 禁止弹新窗；导航仅允许停留在 renderer 自身源内（对齐 persona secureRendererWindow 思路） */
@@ -391,8 +416,11 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      // F3 测试注入标志透传：preload 检测到该参数才暴露 window.live2d.injectVoice
-      additionalArguments: voiceInjectEnabled ? [VOICE_INJECT_ARG] : [],
+      // 标志透传：injectVoice / UI chrome（preload 检测 argv）
+      additionalArguments: [
+        ...(voiceInjectEnabled ? [VOICE_INJECT_ARG] : []),
+        ...(uiChromeEnabled ? [UI_CHROME_ARG] : []),
+      ],
     },
   })
   avatarWindow = win
@@ -565,7 +593,7 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(() => {
     if (!isDev) {
       if (!fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
-        console.error('[live2d] 未找到 renderer/dist/index.html，请先运行 npm run build 再 npm start')
+        console.error('[live2d] 未找到 renderer/dist/index.html，请先运行 bun run build 再 bun start')
         app.exit(1)
         return
       }
@@ -584,7 +612,7 @@ if (!gotSingleInstanceLock) {
     }
     console.log('[live2d] 模型资源指引: 将 Cubism 4 模型放入 renderer/public/model/HiyoriPro/' +
       `（入口 ${MODEL_ENTRY_HINT}），并将 live2dcubismcore.min.js 放入 renderer/public/；`)
-    console.log('[live2d] 缺模型时窗口内显示引导而不会崩溃（生产模式放入后需重新 npm run build）')
+    console.log('[live2d] 缺模型时窗口内显示引导而不会崩溃（生产模式放入后需重新 bun run build）')
     createAppTray()
     createWindow()
     startAudioListener()

@@ -15,6 +15,34 @@ import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
 // ADR 0001 · F2：Electron 壳经 preload 暴露 window.live2d；浏览器（legacy 双进程）无此对象
 const isElectron = typeof window.live2d !== 'undefined'
 
+/**
+ * 顶部状态栏 + 底部调试条显示策略：
+ *  - 纯 Web / legacy：始终显示
+ *  - Electron 默认：隐藏（角色陪伴窗更干净）
+ *  - Electron 调试：?debug=1 / ?ui=1 / #debug / localStorage live2d.uiChrome=1 /
+ *    或 preload.uiChrome（LIVE2D_UI_CHROME / LIVE2D_DEVTOOLS / --live2d-ui-chrome）
+ *  - LIVE2D_RENDERER_LOG 仅终端 console，不打开工具条
+ *
+ * 与 public/ui-chrome-boot.js 保持一致（boot 负责首屏，此处再同步一次 body class）。
+ */
+function shouldShowUiChrome(): boolean {
+  if (!isElectron) return true
+  if (window.live2d?.uiChrome === true) return true
+  try {
+    const q = new URLSearchParams(location.search)
+    if (q.get('debug') === '1' || q.get('ui') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  if (typeof location.hash === 'string' && location.hash.includes('debug')) return true
+  try {
+    if (localStorage.getItem('live2d.uiChrome') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
 const canvas = document.getElementById('live2d-canvas') as HTMLCanvasElement
 const wsDot = document.getElementById('ws-dot') as HTMLDivElement
 const wsStatus = document.getElementById('ws-status') as HTMLSpanElement
@@ -286,23 +314,62 @@ function initVoiceLipSync(app: Live2DApp | null) {
     },
   })
 
-  let shownActivity: VoiceActivity | '' = ''
-  function syncVoiceUI(activity: VoiceActivity) {
-    if (activity === shownActivity) return
-    shownActivity = activity
-    voiceDot.classList.toggle('listening', activity === 'listening')
-    voiceDot.classList.toggle('speaking', activity === 'speaking')
-    voiceStatus.textContent = `语音 ${activity}`
+  /**
+   * 助手（Codex）出声时的肢体表现：对齐 persona 的 Listening/Speaking 槽位思想。
+   * Hiyori 无独立 Speaking 组时用 Idle 循环；speaking 时用略高优先级保证口型期间有体态。
+   * 注意：这是 **agent 播放音频** 的视觉反应，不是用户麦克风说话。
+   */
+  function applyVoiceBodyMotion(activity: VoiceActivity) {
+    if (!app?.isLoaded()) return
+    if (activity === 'speaking') {
+      // priority 2：体态；口型仍由 LOW ticker 在 motion 之后写 ParamMouthOpenY
+      app.playMotion('Idle', -1, 2)
+      currentMotion = motionLabel('Idle')
+      updateStateBar()
+      return
+    }
+    if (activity === 'listening' || activity === 'idle') {
+      app.playMotion('Idle', -1, 1)
+      currentMotion = motionLabel('Idle')
+      updateStateBar()
+    }
   }
-  syncVoiceUI(lip.snapshot().activity)
 
-  const offVoice = window.live2d?.onVoiceEvent?.((event) => lip.handleEvent(event))
+  let shownActivity: VoiceActivity | '' = ''
+  let lastShownLevel = -1
+  function syncVoiceUI(force = false) {
+    const snap = lip.snapshot()
+    const activity = snap.activity
+    const level = snap.level
+    const activityChanged = activity !== shownActivity
+    if (activityChanged) {
+      shownActivity = activity
+      voiceDot.classList.toggle('listening', activity === 'listening')
+      voiceDot.classList.toggle('speaking', activity === 'speaking')
+      applyVoiceBodyMotion(activity)
+      console.log(`[Voice] activity → ${activity} (level=${level.toFixed(3)})`)
+    }
+    // 状态栏展示电平，便于确认「Codex 出声」是否被采到（非用户麦克风）
+    const levelBucket = Math.round(level * 20) / 20
+    if (force || activityChanged || levelBucket !== lastShownLevel) {
+      lastShownLevel = levelBucket
+      const levelStr = level > 0.005 ? ` · L${level.toFixed(2)}` : ''
+      voiceStatus.textContent = `助手语音 ${activity}${levelStr}`
+    }
+  }
+  syncVoiceUI(true)
+
+  const offVoice = window.live2d?.onVoiceEvent?.((event) => {
+    lip.handleEvent(event)
+    // 立即刷 UI（不等下一帧），便于 live-voice 出声瞬间看到 speaking
+    syncVoiceUI()
+  })
   if (!offVoice) console.warn('[Voice] preload 未暴露 onVoiceEvent，voice 通道不可用')
 
   if (app) {
     app.addTicker((dt) => {
       lip.tick(dt)
-      syncVoiceUI(lip.snapshot().activity)
+      syncVoiceUI()
     })
   } else {
     let prev = performance.now()
@@ -310,7 +377,7 @@ function initVoiceLipSync(app: Live2DApp | null) {
       const dt = t - prev
       prev = t
       lip.tick(dt)
-      syncVoiceUI(lip.snapshot().activity)
+      syncVoiceUI()
       requestAnimationFrame(frame)
     }
     requestAnimationFrame(frame)
@@ -435,10 +502,21 @@ function initCommandChannel(app: Live2DApp | null) {
 
 async function main() {
   if (isElectron) {
-    // Electron 壳适配：透明窗体下去掉页面底色、状态栏变为窗口拖拽区（样式见 index.html）
+    // Electron 壳：透明底；默认隐藏顶/底工具条（见 index.html electron-mode:not(.ui-chrome)）
+    // boot 脚本可能已写过 html class；这里同步到 body 并按需打开 ui-chrome。
+    document.documentElement.classList.add('electron-mode')
     document.body.classList.add('electron-mode')
+    if (shouldShowUiChrome()) {
+      document.documentElement.classList.add('ui-chrome')
+      document.body.classList.add('ui-chrome')
+      console.log('[Main] UI chrome 已开启（调试/显式开关）')
+    } else {
+      document.documentElement.classList.remove('ui-chrome')
+      document.body.classList.remove('ui-chrome')
+      console.log('[Main] UI chrome 已隐藏（Electron 陪伴模式；调试用 LIVE2D_UI_CHROME=1 或 ?debug=1）')
+    }
     console.log(
-      `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`
+      `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`,
     )
   }
 

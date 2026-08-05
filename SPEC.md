@@ -62,7 +62,7 @@ renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
 
 | ID | 目标 | 验收要点 |
 |----|------|----------|
-| G1 | Electron 桌面应用可启动并显示 Live2D 角色（或明确缺模引导） | `npm run dev` / `start` 可见角色窗 |
+| G1 | Electron 桌面应用可启动并显示 Live2D 角色（或明确缺模引导） | `bun run dev` / `start` 可见角色窗 |
 | G2 | 口型由 **amplitude level + activity 状态机** 驱动（对齐 persona） | `POST /events` 注入 level 可见嘴动 |
 | G3 | 本机 loopback：`GET /health`、`POST /events`（state / audio-level） | curl 可复现 |
 | G4 | Streamable HTTP MCP：`get_status`、`control_window`、`get_model_info`、`set_expression`、`play_motion`；低成本保留 `look_at` / `set_parameter` / `reset` | tools/list + 调用有证据 |
@@ -344,7 +344,7 @@ Claude Code / Hermes 使用同一 URL（按其 MCP 配置格式）。
 
 ## 10. 迁移策略
 
-1. **默认入口**改为 Electron（`npm run dev` / `npm start`）。
+1. **默认入口**改为 Electron（`bun run dev` / `bun start`）。
 2. 旧 `mcp-server` + 浏览器双开流程：**删除或移入 `legacy/` 并停止维护**；README 仅描述桌面路径。
 3. 现有 Live2D 渲染核心（`live2d-app.ts` 表情/动作/参数）**迁移复用**，去掉对独立 WS 的硬依赖，改为 preload IPC / 主进程推送事件。
 4. 模型与 Cubism Core 仍由用户按文档放入 `renderer/public/`（或后续 settings 配置路径）；缺资源时 UI/日志明确指引。

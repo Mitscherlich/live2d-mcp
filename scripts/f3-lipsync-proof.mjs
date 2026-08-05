@@ -4,7 +4,7 @@
  *
  * 用法：
  *   node scripts/f3-lipsync-proof.mjs          # logic 模式（默认，无外部依赖）
- *   node scripts/f3-lipsync-proof.mjs --e2e    # logic + CDP 端到端（需 GUI；先 npm run build）
+ *   node scripts/f3-lipsync-proof.mjs --e2e    # logic + CDP 端到端（需 GUI；先 bun run build）
  *
  * logic 模式：直接 import renderer 口型绑定层（lip-sync.ts，Node type-stripping
  * 加载），用 mock writeMouth + 假钟连发 level/activity，断言：
@@ -173,7 +173,7 @@ async function runE2e() {
   console.log('[proof:e2e] 启动 Electron（LIVE2D_VOICE_INJECT=1，prod dist，隔离 user-data-dir）…')
   const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
   if (!fs.existsSync(distIndex)) {
-    throw new Error('renderer/dist/index.html 不存在，请先运行 npm run build')
+    throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
   }
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f3-e2e-'))
   const electronBin = path.join(ROOT, 'node_modules', '.bin', 'electron')

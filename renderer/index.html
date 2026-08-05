@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- NFR-2：消除 Electron Insecure-CSP 告警。script 仅同源（无 inline/eval）；
+         wasm-unsafe-eval：Live2D Cubism Core 的 Emscripten WASM 需要；
          style 允许 inline（本页 <style> 块）；connect 放行 legacy WS（localhost:8765）
          与 Vite dev HMR（ws 同源端口）。live2d-app:// 自定义 scheme 下 'self' 同样成立。 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; font-src 'self' data:; object-src 'none'; base-uri 'self'"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
     />
     <title>Live2D Companion</title>
     <style>
@@ -88,14 +89,53 @@
         background: #44ff88;
       }
 
-      /* Electron 壳（ADR 0001 F2）：透明窗体下去掉页面底色；状态栏兼作窗口拖拽区 */
+      /* Electron 壳：透明底；默认隐藏顶部/底部工具条（仅 Web 或 debug UI 显示）。
+         html/body 都认 electron-mode，便于 ui-chrome-boot.js 尽早隐藏、避免闪一下。 */
+      html.electron-mode,
       body.electron-mode {
         background: transparent;
       }
 
-      body.electron-mode #status-bar {
+      html.electron-mode body,
+      body.electron-mode {
+        background: transparent;
+      }
+
+      body.electron-mode #status-bar,
+      html.electron-mode #status-bar {
         background: rgba(0, 0, 0, 0.45);
         -webkit-app-region: drag;
+      }
+
+      /* Electron 正常模式：隐藏状态栏与调试抽屉 */
+      html.electron-mode:not(.ui-chrome) #status-bar,
+      html.electron-mode:not(.ui-chrome) #debug-panel,
+      body.electron-mode:not(.ui-chrome) #status-bar,
+      body.electron-mode:not(.ui-chrome) #debug-panel {
+        display: none !important;
+      }
+
+      /* 无工具条时的隐形拖拽条（frameless 窗仍可移动） */
+      #window-drag-region {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 32px;
+        z-index: 50;
+        -webkit-app-region: drag;
+      }
+      html.electron-mode:not(.ui-chrome) #window-drag-region,
+      body.electron-mode:not(.ui-chrome) #window-drag-region {
+        display: block;
+      }
+      #canvas-container,
+      #live2d-canvas,
+      #debug-panel,
+      #status-bar,
+      #model-load-error {
+        -webkit-app-region: no-drag;
       }
 
       #current-state {
@@ -340,8 +380,12 @@
     <!-- Live2D Cubism Core（需手动下载后放到 public/ 目录） -->
     <!-- 从 https://github.com/Live2D/CubismWebSamples 下载 Core 文件 -->
     <script src="/live2dcubismcore.min.js"></script>
+    <!-- Electron：尽早隐藏顶/底工具条（须在 body 前，依赖 preload 已暴露 window.live2d） -->
+    <script src="/ui-chrome-boot.js"></script>
   </head>
   <body>
+    <!-- Electron 无工具条时用于拖动 frameless 窗口 -->
+    <div id="window-drag-region" aria-hidden="true"></div>
     <div id="status-bar">
       <div class="status-indicator">
         <div class="dot" id="ws-dot"></div>
@@ -410,8 +454,9 @@
       <p>请将 Live2D Cubism 4 模型放入 <code>renderer/public/model/HiyoriPro/</code>，<br/>
       期望入口：<code>/model/HiyoriPro/hiyori_pro_t11.model3.json</code>；<br/>
       并将 <code>live2dcubismcore.min.js</code> 放入 <code>renderer/public/</code>。</p>
-      <p style="margin-top:8px;opacity:.85">开发模式（npm run dev）刷新即可生效；<br/>
-      生产模式（npm start）放入后需重新 <code>npm run build</code>。</p>
+      <p style="margin-top:8px;opacity:.85">开发模式（bun run dev）保存后刷新即可；<br/>
+      生产模式（bun start）放入后需重新 <code>bun run build</code>。</p>
+      <p data-error-detail style="margin-top:10px;font-size:12px;opacity:.9;word-break:break-all"></p>
       <p style="margin-top:10px">
         模型下载：<a href="https://www.live2d.com/en/download/sample-data/" target="_blank">Live2D 官方示例</a>
         ｜ Core：<a href="https://github.com/Live2D/CubismWebSamples" target="_blank">CubismWebSamples</a>

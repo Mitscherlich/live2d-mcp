@@ -4,7 +4,7 @@
  *
  * 用法：
  *   node scripts/f4-bridge-proof.mjs          # http 模式（默认，无 GUI 依赖）
- *   node scripts/f4-bridge-proof.mjs --e2e    # http + curl→Electron 端到端（需 GUI；先 npm run build）
+ *   node scripts/f4-bridge-proof.mjs --e2e    # http + curl→Electron 端到端（需 GUI；先 bun run build）
  *
  * http 模式：进程内起 bridge（临时端口），用真实 curl 打 /health 与 /events，断言：
  *   - /health 200 JSON（ok/bridgePort/voice 摘要）
@@ -230,7 +230,7 @@ function connectCdp(wsUrl) {
 async function runE2e() {
   const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
   if (!fs.existsSync(distIndex)) {
-    throw new Error('renderer/dist/index.html 不存在，请先运行 npm run build')
+    throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
   }
   const bridgePort = await getFreePort()
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f4-e2e-'))
