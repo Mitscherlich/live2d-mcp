@@ -8,10 +8,40 @@ const {
   VOICE_INJECT_CHANNEL,
   normalizeVoiceEvent,
 } = require('../voice-events.cjs')
+const { loadSourceProbe } = require('./helpers/source-probe.cjs')
+
+/**
+ * preload 的 VALID_EVENT_TYPES 每个成员对应的最小合法负载。
+ * 该表同时充当「preload 放行面 == 本表键集」的锚：preload 新增 type 而这里没补样本，
+ * 下面的 deepEqual 会红，避免放行了 main 根本不认识的事件。
+ */
+const MINIMAL_EVENT_SAMPLES = {
+  'audio-level': { type: 'audio-level', level: 0.5 },
+  state: { type: 'state', state: { activity: 'speaking' } },
+}
 
 test('IPC 通道名稳定（preload / renderer / F4 bridge 依赖其语义）', () => {
   assert.equal(VOICE_EVENT_CHANNEL, 'live2d:voice')
   assert.equal(VOICE_INJECT_CHANNEL, 'live2d:voice-inject')
+})
+
+test('preload.cjs 内联 voice channel 与本模块一致（防漂移：真读 preload 源文本）', () => {
+  const preload = loadSourceProbe('preload.cjs')
+  assert.equal(preload.stringConst('VOICE_EVENT_CHANNEL'), VOICE_EVENT_CHANNEL)
+  assert.equal(preload.stringConst('VOICE_INJECT_CHANNEL'), VOICE_INJECT_CHANNEL)
+})
+
+test('preload.cjs 内联 VALID_EVENT_TYPES 与 normalizeVoiceEvent 接受面一致（防漂移）', () => {
+  const types = loadSourceProbe('preload.cjs').setMembers('VALID_EVENT_TYPES')
+  assert.deepEqual(types, Object.keys(MINIMAL_EVENT_SAMPLES).sort())
+  // preload 放行的每个 type，main 权威规范化都必须认——否则事件被静默丢在中途
+  for (const type of types) {
+    assert.notEqual(
+      normalizeVoiceEvent(MINIMAL_EVENT_SAMPLES[type]),
+      null,
+      `preload 放行的 '${type}' 事件应被 normalizeVoiceEvent 接受`,
+    )
+  }
 })
 
 test('audio-level：合法 level 原样通过', () => {

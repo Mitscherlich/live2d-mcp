@@ -21,7 +21,8 @@ const { promisify } = require('node:util')
 const {
   DEFAULT_VOICE_APP_PATTERN,
   normalizeVoiceSource,
-  processMatchesSource,
+  processIdentity,
+  voiceSourceIdentity,
 } = require('./voice-source.cjs')
 
 const execFileAsync = promisify(execFile)
@@ -56,10 +57,14 @@ function mergeMacProcessCommands(processes, commands) {
   return processes.map((proc) => ({ ...proc, command: commands.get(proc.pid) ?? '' }))
 }
 
-/** identity 匹配：regex 命中 name/executable/command 拼接文本（词边界由 pattern 自身保证） */
+/**
+ * identity 匹配：regex 命中 `name command` 拼接文本（词边界由 pattern 自身保证）。
+ * 不再拼 executable —— parseMacProcessList 里 name 与 executable 同为 comm 捕获组，
+ * 拼进去只是让每个进程多匹配一遍同样的文本。
+ */
 function identityMatches(proc, pattern = DEFAULT_VOICE_APP_PATTERN) {
   pattern.lastIndex = 0
-  return pattern.test(`${proc.name} ${proc.executable ?? ''} ${proc.command ?? ''}`)
+  return pattern.test(`${proc.name} ${proc.command ?? ''}`)
 }
 
 /**
@@ -78,13 +83,16 @@ function selectVoiceProcessTree(
   } = {},
 ) {
   const byId = new Map(processes.map((entry) => [entry.pid, entry]))
+  // application 模式：目标 identity 只解码一次，逐进程直接比字符串
+  // （反过来对每个进程 base64 编码再比 source_id 要贵一个数量级）
+  const targetIdentity = sourceId ? voiceSourceIdentity(sourceId, platform) : null
+  const matchesTarget = (entry) =>
+    sourceId
+      ? targetIdentity !== null && processIdentity(entry, platform) === targetIdentity
+      : identityMatches(entry, pattern)
   const directlyMatched = new Set(
     processes
-      .filter(
-        (entry) =>
-          entry.pid !== ownProcessId &&
-          (sourceId ? processMatchesSource(entry, platform, sourceId) : identityMatches(entry, pattern)),
-      )
+      .filter((entry) => entry.pid !== ownProcessId && matchesTarget(entry))
       .map((entry) => entry.pid),
   )
   const matched = new Set()
@@ -110,10 +118,22 @@ function selectVoiceProcessTree(
 /**
  * 平台进程快照。darwin → ps；其他平台 → []（预留；listener 计划层负责
  * platform-not-supported 状态，不在此报错）。
+ *
+ * @param {boolean} [includeArgs] 是否额外跑 `ps -axo pid=,args=` 取完整命令行。
+ *   automatic/custom 需要（CLI 启动的 codex，comm 只是 node）；application 模式
+ *   按 executable identity 匹配，不看 command，跑第二次 ps 纯属浪费。
  */
-async function listPlatformProcesses({ platform = process.platform, run = execFileAsync } = {}) {
+async function listPlatformProcesses({
+  platform = process.platform,
+  run = execFileAsync,
+  includeArgs = true,
+} = {}) {
   if (platform === 'darwin') {
     const options = { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 3_000 }
+    if (!includeArgs) {
+      const identityOnly = await run('ps', ['-axo', 'pid=,ppid=,comm='], options)
+      return parseMacProcessList(identityOnly.stdout)
+    }
     const [identityResult, commandResult] = await Promise.all([
       run('ps', ['-axo', 'pid=,ppid=,comm='], options),
       run('ps', ['-axo', 'pid=,args='], options),
@@ -123,6 +143,8 @@ async function listPlatformProcesses({ platform = process.platform, run = execFi
       parseMacCommandList(commandResult.stdout),
     )
   }
+  // TODO(win32): Windows 进程枚举未实现；非 darwin 一律返回空快照，
+  // 由 audio-listener.cjs 报 platform-not-supported 并降级到 external
   return []
 }
 
@@ -139,12 +161,13 @@ async function discoverVoiceProcesses({
   pattern = null,
   voiceSource = null,
 } = {}) {
-  const processes = await listPlatformProcesses({ platform, run })
   const selected = normalizeVoiceSource(voiceSource)
+  const sourceId = selected.mode === 'application' ? selected.source_id : null
+  const processes = await listPlatformProcesses({ platform, run, includeArgs: sourceId === null })
   return selectVoiceProcessTree(processes, {
     ownProcessId,
     platform,
-    sourceId: selected.mode === 'application' ? selected.source_id : null,
+    sourceId,
     pattern: pattern ?? DEFAULT_VOICE_APP_PATTERN,
   })
 }

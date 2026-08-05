@@ -15,10 +15,10 @@ const {
   DEFAULT_VOICE_SOURCE,
   MAX_VOICE_SOURCE_PATTERN_LENGTH,
   VOICE_SOURCE_MODES,
-  compileVoiceSourcePattern,
   encodeIdentity,
   isValidVoiceSourceId,
   normalizeVoiceSource,
+  processIdentity,
   processMatchesSource,
   processSourceId,
   resolveVoiceSourceConfig,
@@ -26,6 +26,7 @@ const {
   resolveVoiceSourcePattern,
   sanitizeVoiceSource,
   sanitizeVoiceSourcePattern,
+  voiceSourceIdentity,
 } = require('../voice-source.cjs')
 
 test('模式枚举恰为 SPEC 四模式（automatic 对齐 persona default）', () => {
@@ -242,12 +243,6 @@ test('resolveVoiceSourceConfig：环境 mode 明确覆盖持久化配置', () =>
   assert.equal(cfg.environmentOverridesVoice, true)
 })
 
-test('compileVoiceSourcePattern：空/非法回退默认', () => {
-  assert.equal(compileVoiceSourcePattern(''), DEFAULT_VOICE_APP_PATTERN)
-  assert.equal(compileVoiceSourcePattern('(bad'), DEFAULT_VOICE_APP_PATTERN)
-  assert.equal(compileVoiceSourcePattern('codex').test('CODEX'), true)
-})
-
 test('processSourceId / processMatchesSource：application 匹配语义（darwin）', () => {
   const proc = { pid: 100, name: 'ChatGPT', executable: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' }
   const id = processSourceId('darwin', proc)
@@ -256,4 +251,19 @@ test('processSourceId / processMatchesSource：application 匹配语义（darwin
   assert.equal(processMatchesSource({ ...proc, executable: '/other/path' }, 'darwin', id), false)
   // 非 darwin/win32 平台不产 source id（linux 预留）
   assert.equal(processSourceId('linux', proc), null)
+})
+
+test('voiceSourceIdentity：解码一次得目标 identity，供逐进程直接比较', () => {
+  const proc = { pid: 100, name: 'ChatGPT', executable: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' }
+  const id = processSourceId('darwin', proc)
+  // 批量匹配路径（process-discovery selectVoiceProcessTree）的等价性：
+  // 解一次 source_id 后比 identity ≡ 逐进程编码后比 source_id
+  assert.equal(voiceSourceIdentity(id, 'darwin'), proc.executable)
+  assert.equal(processIdentity(proc, 'darwin') === voiceSourceIdentity(id, 'darwin'), true)
+  // 平台不符 / 形状非法 / 解码为空 → null（不匹配任何进程）
+  assert.equal(voiceSourceIdentity(id, 'win32'), null)
+  assert.equal(voiceSourceIdentity('process:linux:abc', 'linux'), null)
+  assert.equal(voiceSourceIdentity('not-a-source-id', 'darwin'), null)
+  assert.equal(voiceSourceIdentity(null, 'darwin'), null)
+  assert.equal(processMatchesSource(proc, 'darwin', 'not-a-source-id'), false)
 })

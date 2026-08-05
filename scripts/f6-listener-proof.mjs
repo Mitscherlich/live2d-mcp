@@ -9,67 +9,22 @@
  *     unavailable/helper-missing，且应用与 external fallback 提示保持可用。
  */
 
-import { execFile, spawn } from 'node:child_process'
-import { once } from 'node:events'
 import fs from 'node:fs'
-import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
-import { createRequire } from 'node:module'
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const require = createRequire(import.meta.url)
-const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
-const {
-  StreamableHTTPClientTransport,
-} = require('@modelcontextprotocol/sdk/client/streamableHttp.js')
-
-const execFileP = promisify(execFile)
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-let checks = 0
-let failures = 0
-
-function check(label, condition, detail = '') {
-  checks += 1
-  if (condition) {
-    console.log(`  ✔ ${label}`)
-    return
-  }
-  failures += 1
-  console.error(`  ✘ ${label}${detail ? ` —— ${detail}` : ''}`)
-}
-
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address()
-      server.close(() => resolve(port))
-    })
-  })
-}
-
-async function curlJson(url, { method = 'GET', data } = {}) {
-  const args = ['-sS', '--noproxy', '*', '-X', method, '-w', '\n%{http_code}']
-  if (data !== undefined) {
-    args.push('-H', 'content-type: application/json', '--data', JSON.stringify(data))
-  }
-  args.push(url)
-  const { stdout } = await execFileP('curl', args, { maxBuffer: 8 * 1024 * 1024 })
-  const splitAt = stdout.lastIndexOf('\n')
-  const status = Number(stdout.slice(splitAt + 1).trim())
-  const raw = stdout.slice(0, splitAt)
-  let body = null
-  try {
-    body = JSON.parse(raw)
-  } catch {
-    // 保留 raw 供断言报错。
-  }
-  return { status, body, raw }
-}
+import { assertRendererBuilt, launchElectron } from './lib/electron-harness.mjs'
+import {
+  check,
+  connectCdp,
+  connectMcpClient,
+  createEvaluate,
+  curlJson,
+  ensureCurl,
+  parseToolJson,
+  proofCounts,
+  sleep,
+} from './lib/proof-harness.mjs'
 
 async function waitForHealth(baseUrl, predicate = () => true) {
   let last = null
@@ -85,38 +40,7 @@ async function waitForHealth(baseUrl, predicate = () => true) {
   throw new Error(`等待 /health 超时：${last?.raw ?? '无响应'}`)
 }
 
-function parseToolJson(result) {
-  return JSON.parse(result.content[0].text)
-}
-
-async function connectMcp(baseUrl, name) {
-  const client = new Client({ name, version: '0.0.1' })
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`)))
-  return client
-}
-
-function connectCdp(wsUrl) {
-  const socket = new WebSocket(wsUrl)
-  let sequence = 0
-  const pending = new Map()
-  socket.addEventListener('message', (event) => {
-    const message = JSON.parse(String(event.data))
-    const request = pending.get(message.id)
-    if (!request) return
-    pending.delete(message.id)
-    if (message.error) request.reject(new Error(message.error.message))
-    else request.resolve(message.result)
-  })
-  const ready = once(socket, 'open')
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const id = ++sequence
-      pending.set(id, { resolve, reject })
-      socket.send(JSON.stringify({ id, method, params }))
-    })
-  return { ready, send, close: () => socket.close() }
-}
-
+/** 与 f3/f4/f5 的 findRendererTarget 不同：这里连 target 出现本身也要重试等待。 */
 async function waitForRendererTarget(cdpPort) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
@@ -136,48 +60,6 @@ async function waitForRendererTarget(cdpPort) {
   throw new Error('等待 renderer CDP target 超时')
 }
 
-async function launchElectron({ name, environment, cdp = false }) {
-  const bridgePort = await getFreePort()
-  const cdpPort = cdp ? await getFreePort() : null
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `live2d-f6-${name}-`))
-  const electronBin = path.join(ROOT, 'node_modules', '.bin', 'electron')
-  const args = ['.', `--user-data-dir=${userDataDir}`, '--no-first-run']
-  if (cdpPort !== null) args.push(`--remote-debugging-port=${cdpPort}`)
-  const child = spawn(electronBin, args, {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      LIVE2D_BRIDGE_PORT: String(bridgePort),
-      LIVE2D_RENDERER_LOG: '1',
-      ...environment,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let log = ''
-  child.stdout.on('data', (chunk) => {
-    log += String(chunk)
-  })
-  child.stderr.on('data', (chunk) => {
-    log += String(chunk)
-  })
-  const exitPromise = once(child, 'exit')
-  return {
-    baseUrl: `http://127.0.0.1:${bridgePort}`,
-    cdpPort,
-    getLog: () => log,
-    async close() {
-      child.kill('SIGTERM')
-      const result = await Promise.race([
-        exitPromise.then(([code, signal]) => ({ code, signal })),
-        sleep(8_000).then(() => null),
-      ])
-      if (result === null) child.kill('SIGKILL')
-      fs.rmSync(userDataDir, { recursive: true, force: true })
-      return result
-    },
-  }
-}
-
 async function runExternalScenario(tempDir) {
   console.log('[proof:external] 启动 external 模式，验证 status + /events 口型…')
   const marker = path.join(tempDir, 'native-helper-was-started')
@@ -186,8 +68,8 @@ async function runExternalScenario(tempDir) {
   fs.chmodSync(sentinel, 0o755)
 
   const app = await launchElectron({
-    name: 'external',
-    cdp: true,
+    name: 'f6-external',
+    cdpPort: 'auto',
     environment: {
       LIVE2D_VOICE_SOURCE_MODE: 'external',
       LIVE2D_NATIVE_HELPER_PATH: sentinel,
@@ -205,7 +87,7 @@ async function runExternalScenario(tempDir) {
       health.raw)
     check('external 未执行 native helper sentinel', !fs.existsSync(marker))
 
-    client = await connectMcp(app.baseUrl, 'f6-external-proof')
+    client = await connectMcpClient(`${app.baseUrl}/mcp`, 'f6-external-proof')
     const status = parseToolJson(
       await client.callTool({ name: 'get_status', arguments: {} }),
     )
@@ -217,11 +99,7 @@ async function runExternalScenario(tempDir) {
     cdp = connectCdp(target.webSocketDebuggerUrl)
     await cdp.ready
     await cdp.send('Runtime.enable')
-    const evaluate = async (expression) => {
-      const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true })
-      if (result.exceptionDetails) throw new Error('renderer 求值失败')
-      return result.result.value
-    }
+    const evaluate = createEvaluate(cdp)
     let debugReady = false
     for (let attempt = 0; attempt < 50 && !debugReady; attempt += 1) {
       debugReady = await evaluate('!!window.__live2dVoiceDebug').catch(() => false)
@@ -253,8 +131,8 @@ async function runExternalScenario(tempDir) {
     await client?.close().catch(() => {})
     const exit = await app.close()
     check('external Electron 干净退出',
-      exit !== null && !app.getLog().includes('render-process-gone'),
-      app.getLog().slice(-500))
+      exit !== null && !app.appLog().includes('render-process-gone'),
+      app.appLog().slice(-500))
   }
 }
 
@@ -262,7 +140,7 @@ async function runMissingHelperScenario(tempDir) {
   console.log('[proof:automatic] 启动 automatic + helper 缺失，验证清晰 unavailable…')
   const missingHelper = path.join(tempDir, 'does-not-exist', 'live2d-audio-listener')
   const app = await launchElectron({
-    name: 'missing-helper',
+    name: 'f6-missing-helper',
     environment: {
       LIVE2D_VOICE_SOURCE_MODE: 'automatic',
       LIVE2D_NATIVE_HELPER_PATH: missingHelper,
@@ -279,7 +157,7 @@ async function runMissingHelperScenario(tempDir) {
         health.body?.listener?.status === 'unavailable' &&
         health.body?.listener?.detail === 'helper-missing',
       health.raw)
-    client = await connectMcp(app.baseUrl, 'f6-missing-helper-proof')
+    client = await connectMcpClient(`${app.baseUrl}/mcp`, 'f6-missing-helper-proof')
     const status = parseToolJson(
       await client.callTool({ name: 'get_status', arguments: {} }),
     )
@@ -290,22 +168,19 @@ async function runMissingHelperScenario(tempDir) {
       JSON.stringify(status.listener))
     check('错误摘要提示 external fallback',
       /LIVE2D_VOICE_SOURCE_MODE=external/.test(health.body?.listener?.error ?? '') ||
-        app.getLog().includes('automatic/unavailable (helper-missing)'),
-      app.getLog().slice(-500))
+        app.appLog().includes('automatic/unavailable (helper-missing)'),
+      app.appLog().slice(-500))
   } finally {
     await client?.close().catch(() => {})
     const exit = await app.close()
     check('helper 缺失场景 Electron 干净退出',
-      exit !== null && !app.getLog().includes('render-process-gone'),
-      app.getLog().slice(-500))
+      exit !== null && !app.appLog().includes('render-process-gone'),
+      app.appLog().slice(-500))
   }
 }
 
-const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
-if (!fs.existsSync(distIndex)) {
-  throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
-}
-await execFileP('curl', ['--version'])
+assertRendererBuilt()
+await ensureCurl()
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f6-proof-'))
 console.log('=== F6 证据：voice source + main listener 接线 + 真实 status ===')
@@ -316,6 +191,7 @@ try {
   fs.rmSync(tempDir, { recursive: true, force: true })
 }
 
+const { checks, failures } = proofCounts()
 if (failures > 0) {
   console.error(`✘ F6 证据失败：${failures}/${checks} 项断言未过`)
   process.exit(1)

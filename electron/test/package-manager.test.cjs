@@ -25,14 +25,7 @@ test('packageManager field declares bun and engines.bun', () => {
 test('root scripts use bun for workspace orchestration (not npm run)', () => {
   const pkg = readJson('package.json')
   const scripts = pkg.scripts || {}
-  for (const name of [
-    'build',
-    'dev',
-    'dev:electron',
-    'dev:mcp-server',
-    'dev:renderer',
-    'dev:legacy',
-  ]) {
+  for (const name of ['build', 'dev', 'dev:electron']) {
     assert.ok(scripts[name], `missing script ${name}`)
     assert.doesNotMatch(
       scripts[name],
@@ -58,12 +51,6 @@ test('lockfile is bun.lock (package-lock.json must not exist)', () => {
     false,
     'package-lock.json must be removed so bun is the install source of truth',
   )
-})
-
-test('mcp-server dev uses bun runtime', () => {
-  const pkg = readJson('mcp-server/package.json')
-  assert.match(pkg.scripts.dev, /\bbun\b/)
-  assert.doesNotMatch(pkg.scripts.dev, /\bnpm\b/)
 })
 
 test('test script still drives node:test on real shipped entry (node-compatible)', () => {

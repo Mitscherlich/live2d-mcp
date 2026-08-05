@@ -3,16 +3,23 @@
 /**
  * Native 进程音频监听器（ADR 0001 · F6 · FR-V3；darwin 优先）
  *
- * 生命周期：poll（默认 1.5s）经 process-discovery 发现目标进程树 → 匹配集变化时
- * spawn native helper（native/bin/darwin/live2d-audio-listener，Core Audio process
- * tap）→ NDJSON 协议消费 waiting/ready/level/error：
+ * 生命周期：poll 经 process-discovery 发现目标进程树 → 匹配集变化时 spawn native
+ * helper（native/bin/darwin/live2d-audio-listener，Core Audio process tap）→ NDJSON
+ * 协议消费 waiting/ready/level/error：
  *
  *  - waiting：目标进程已匹配但尚无 Core Audio 输出对象（helper 内等待，不 churn）
  *  - ready  ：tap 已附着，resolved pids 并入捕获 key（worker churn 吸收，思路对齐 persona）
  *  - level  ：峰值电平（helper 已归一化）；> 0.008 开启/续期会话（sessionIdleMs 默认
- *            8s 无声音符结束会话），电平过 AudioActivityGate 产出 onLevel/onActivity
+ *            8s 无声音符结束会话），电平经零抑制后直接 onLevel（见 emitLevel）
  *  - error  ：带机读 code（tap-create-failed / unsupported-os / no-audio-process …）
  *            + permissionHint（helper 的 TCC preflight），分类进状态负载
+ *
+ * activity（listening ⇄ speaking）不在本层推导：renderer 的 VoiceStateMachine
+ * 从同一条 level 流按同阈值/同静音保持时长推导，main 侧再推一次没有信息增量。
+ *
+ * 轮询分档：未捕获时按 pollIntervalMs（默认 1.5s）发现进程；已捕获时进程发现结果
+ * 只会被 captureKey 早退丢弃（helper 退出/错误本就事件驱动上报），故降到
+ * capturingPollIntervalMs（默认 12s）才真正执行一次 ps 快照。
  *
  * 状态负载（onStatus；listener-status.cjs 据此映射公开枚举）：
  *   { available, capturing, monitoring, source, matched, detail, error, permissionHint }
@@ -29,23 +36,26 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
-const {
-  AudioActivityGate,
-  DEFAULT_SPEECH_RELEASE_MS,
-} = require('./audio-activity-gate.cjs')
 const { discoverVoiceProcesses } = require('./process-discovery.cjs')
 const { normalizeVoiceSource } = require('./voice-source.cjs')
 
 const SESSION_IDLE_MS = 8_000
 const DEFAULT_POLL_INTERVAL_MS = 1_500
+/** 已捕获时的进程发现节奏（捕获期 poll 结果本就被丢弃，见 poll 的 captureKey 早退） */
+const DEFAULT_CAPTURING_POLL_INTERVAL_MS = 12_000
 const DEFAULT_FAILURE_RETRY_MS = 60_000
-/** level 超过该值视作会话活跃（对齐 persona 0.008 与 renderer audibleFloor） */
+/**
+ * level 超过该值视作会话活跃（对齐 persona 0.008）。
+ * 与 renderer/src/voice-state.ts 的 VOICE_DEFAULTS.audibleFloor 同语义、必须同值，
+ * 一致性由 renderer/test/voice-state.test.ts 护栏断言。
+ */
 const SESSION_AUDIBLE_LEVEL = 0.008
 
 /** terminal 失败 detail 集合：命中后对同一捕获 key 进入冷却退避 */
 const TERMINAL_FAILURE_DETAILS = new Set(['tap-create-failed', 'spawn-failed', 'helper-exited', 'unsupported-os'])
 
 function helperExecutableName(platform) {
+  // TODO(win32): .exe 命名为预留；native/ 下当前只构建 darwin helper（见 scripts/build-native-helper.sh）
   return platform === 'win32' ? 'live2d-audio-listener.exe' : 'live2d-audio-listener'
 }
 
@@ -62,6 +72,7 @@ function resolveNativeHelperPath({
   const override = environment?.LIVE2D_NATIVE_HELPER_PATH
   if (typeof override === 'string' && override.trim()) return override.trim()
   const executable = helperExecutableName(platform)
+  // TODO(win32): path.win32 分支同为预留，Windows 尚无 helper 产物可解析
   const platformPath = platform === 'win32' ? path.win32 : path.posix
   return isPackaged
     ? platformPath.join(resourcesPath, 'native', platform, executable)
@@ -95,17 +106,17 @@ class NativeProcessAudioListener {
     environment = process.env,
     processDiscovery = discoverVoiceProcesses,
     spawnProcess = spawn,
-    onActivity = () => {},
     onDebug = null,
     onLevel = () => {},
     onSession = () => {},
     onStatus = () => {},
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    capturingPollIntervalMs = DEFAULT_CAPTURING_POLL_INTERVAL_MS,
     sessionIdleMs = SESSION_IDLE_MS,
-    speechReleaseMs = DEFAULT_SPEECH_RELEASE_MS,
     failureRetryMs = DEFAULT_FAILURE_RETRY_MS,
     processPattern = null,
     voiceSource = null,
+    now = Date.now,
   } = {}) {
     this.platform = platform
     this.helperPath =
@@ -114,11 +125,13 @@ class NativeProcessAudioListener {
     this.processPattern = processPattern
     this.voiceSource = normalizeVoiceSource(voiceSource)
     this.spawnProcess = spawnProcess
-    this.onActivity = onActivity
     this.onDebug = onDebug
+    this.onLevel = onLevel
     this.onSession = onSession
     this.onStatus = onStatus
+    this.now = now
     this.pollIntervalMs = pollIntervalMs
+    this.capturingPollIntervalMs = capturingPollIntervalMs
     this.sessionIdleMs = sessionIdleMs
     this.failureRetryMs = failureRetryMs
     this.capture = null
@@ -131,16 +144,31 @@ class NativeProcessAudioListener {
     this.stopped = true
     this.pollInFlight = false
     this.lastStatusKey = null
+    /** 最近一次真正执行进程发现的时刻（轮询分档，见 poll） */
+    this.lastDiscoveryAt = 0
+    /** 零电平抑制状态：renderer 已知 level 为 0，后续连续 0 无需再发（见 emitLevel） */
+    this.levelSilent = false
     /** terminal 失败冷却：{ key, at } —— 同一捕获 key 在 failureRetryMs 内不再 spawn */
     this.failure = null
     /** 最近一次 helper error 消息的 detail（exit 时不回 flap 到 idle） */
     this.lastErrorDetail = null
-    this.gate = new AudioActivityGate({
-      onActivity,
-      onLevel,
-      shouldReturnToListening: () => this.sessionActive,
-      speechReleaseMs,
-    })
+  }
+
+  /**
+   * 发射规范化后的 level，抑制静音期的连续 0。
+   *
+   * helper 以 30Hz 无条件推 level，静音期整条链路（JSON.parse → IPC → renderer）
+   * 都在搬运 0。静音后的第一条 0 必须送达——renderer 靠它设置 silentSince 作为
+   * 900ms 静音保持的起算点；此后的连续 0 全部丢弃，直到再次出现非零电平。
+   */
+  emitLevel(level) {
+    if (level === 0) {
+      if (this.levelSilent) return
+      this.levelSilent = true
+    } else {
+      this.levelSilent = false
+    }
+    this.onLevel(level)
   }
 
   reportStatus(status) {
@@ -184,6 +212,11 @@ class NativeProcessAudioListener {
 
   async poll() {
     if (this.stopped || this.pollInFlight) return
+    // 分档：未捕获时保持 tick 节奏；已捕获时进程发现结果只会被下方 captureKey
+    // 早退丢弃（helper 退出/错误是事件驱动上报的），降到 capturingPollIntervalMs 一次
+    const startedAt = this.now()
+    if (this.capture && startedAt - this.lastDiscoveryAt < this.capturingPollIntervalMs) return
+    this.lastDiscoveryAt = startedAt
     this.pollInFlight = true
     try {
       const processes = await this.processDiscovery({
@@ -202,7 +235,7 @@ class NativeProcessAudioListener {
       const key = stablePids.join(',')
       if (this.capture && this.captureKey === key) return
       if (this.failure && this.failure.key !== key) this.failure = null // 目标集变化 → 解除冷却
-      if (this.failure && Date.now() - this.failure.at < this.failureRetryMs) return
+      if (this.failure && this.now() - this.failure.at < this.failureRetryMs) return
       this.detach({ sessionEnded: false })
       this.startCapture(spawnPids, key, processes.rootPids)
     } catch (error) {
@@ -228,7 +261,7 @@ class NativeProcessAudioListener {
 
   noteFailure(key, detail) {
     if (!TERMINAL_FAILURE_DETAILS.has(detail)) return
-    this.failure = { key, at: Date.now() }
+    this.failure = { key, at: this.now() }
   }
 
   startCapture(processIds, key, rootPids = []) {
@@ -266,7 +299,7 @@ class NativeProcessAudioListener {
       this.captureKey = null
       this.captureRootPids = new Set()
       this.resolvedPids = new Set()
-      this.gate.reset()
+      this.emitLevel(0)
       this.endSession()
       if (this.lastErrorDetail) {
         // error 消息已分类上报（如 tap-create-failed → permission-denied），退出不回 flap
@@ -347,7 +380,7 @@ class NativeProcessAudioListener {
         this.onSession(true)
       }
     }
-    this.gate.handleLevel(level)
+    this.emitLevel(level)
   }
 
   endSession() {
@@ -355,7 +388,7 @@ class NativeProcessAudioListener {
     this.sessionTimer = null
     if (!this.sessionActive) return
     this.sessionActive = false
-    this.gate.reset()
+    this.emitLevel(0)
     this.onSession(false)
   }
 
@@ -368,7 +401,7 @@ class NativeProcessAudioListener {
       child.kill()
     }
     if (sessionEnded) this.resolvedPids = new Set()
-    this.gate.reset()
+    this.emitLevel(0)
     if (sessionEnded) this.endSession()
     this.reportStatus({
       available: true, capturing: false, monitoring: !this.stopped,
@@ -387,6 +420,7 @@ class NativeProcessAudioListener {
 }
 
 module.exports = {
+  DEFAULT_CAPTURING_POLL_INTERVAL_MS,
   DEFAULT_FAILURE_RETRY_MS,
   DEFAULT_POLL_INTERVAL_MS,
   NativeProcessAudioListener,

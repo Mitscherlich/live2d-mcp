@@ -18,7 +18,8 @@
  *  - 在 bridge 同端口挂载 Streamable HTTP MCP（/mcp，electron/mcp-server.cjs）：
  *    get_status / control_window / get_model_info / set_expression / play_motion
  *    （+ 低成本保留 look_at / set_parameter / reset）；**无 speak/TTS 工具**；
- *  - main ↔ renderer 命令通道（electron/renderer-commands.cjs 帧协议）：
+ *  - main ↔ renderer 命令通道（帧协议 electron/renderer-commands.cjs，
+ *    请求-响应关联器 electron/renderer-command-channel.cjs）：
  *    MCP 视觉工具经 'live2d:command' 请求-响应转发 renderer 执行，
  *    renderer 未挂接/无模型时返回清晰错误，不崩溃；
  *  - /health 的 mcp 字段标记 implemented:true 并给出实际 URL。
@@ -37,7 +38,6 @@
 
 const path = require('node:path')
 const fs = require('node:fs')
-const { randomUUID } = require('node:crypto')
 const {
   app,
   BrowserWindow,
@@ -65,19 +65,20 @@ const {
   createBridgeServer,
   resolveBridgePort,
 } = require('./bridge-server.cjs')
-const {
-  COMMAND_CHANNEL,
-  COMMAND_RESULT_CHANNEL,
-  COMMAND_READY_CHANNEL,
-  COMMAND_TIMEOUT_MS,
-  normalizeCommandResultFrame,
-} = require('./renderer-commands.cjs')
-const { MCP_PATH, createLive2dMcpHandler } = require('./mcp-server.cjs')
+const { createRendererCommandChannel } = require('./renderer-command-channel.cjs')
+const { MCP_PATH } = require('./mcp-protocol.cjs')
+const { createLive2dMcpHandler } = require('./mcp-server.cjs')
 const { resolveVoiceSourceConfig } = require('./voice-source.cjs')
 const { createAudioListener } = require('./audio-listener.cjs')
 const { buildListenerSummary } = require('./listener-status.cjs')
 const { createSettingsStore, defaultSettings } = require('./settings-store.cjs')
 const { buildSettingsViewModel } = require('./settings-view.cjs')
+const {
+  SETTINGS_GET_CHANNEL,
+  SETTINGS_SAVE_CHANNEL,
+  SETTINGS_COPY_CHANNEL,
+  SETTINGS_CHANGED_CHANNEL,
+} = require('./settings-channels.cjs')
 const {
   createTrayController,
   shouldQuitAfterAllWindowsClosed,
@@ -88,11 +89,6 @@ const WINDOW_HEIGHT = 640
 const WINDOW_MARGIN = 24
 const SETTINGS_WIDTH = 560
 const SETTINGS_HEIGHT = 700
-
-const SETTINGS_GET_CHANNEL = 'live2d:settings:get'
-const SETTINGS_SAVE_CHANNEL = 'live2d:settings:save'
-const SETTINGS_COPY_CHANNEL = 'live2d:settings:copy-command'
-const SETTINGS_CHANGED_CHANNEL = 'live2d:settings:changed'
 
 const DIST_DIR = path.join(__dirname, '..', 'renderer', 'dist')
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL ?? ''
@@ -132,73 +128,8 @@ function sendVoiceEvent(win, raw) {
   return true
 }
 
-// F3 测试注入回环：renderer 调 window.live2d.injectVoice → 本监听 → 规范化 →
-// 经 'live2d:voice' 送回同一 renderer（与 F4 真实推送走完全相同的 renderer 路径）。
-// 未开 inject 标志时不注册，生产路径无注入面。
-if (voiceInjectEnabled) {
-  ipcMain.on(VOICE_INJECT_CHANNEL, (event, raw) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? avatarWindow
-    sendVoiceEvent(win, raw)
-  })
-}
-
-// ---------------------------------------------------- F5 main↔renderer 命令通道
-// MCP 视觉工具的执行路径：main 发 'live2d:command' { requestId, type, params } →
-// preload 窄校验后交 renderer 注册的 handler（renderer/src/main.ts）执行 Live2DApp →
-// 'live2d:command-result' 回传 { requestId, result }。本侧仅认白名单结果帧。
-
-/** @type {Map<string, { resolve: (result: object) => void, timer: NodeJS.Timeout }>} */
-const pendingCommands = new Map()
-/** renderer 命令 handler 是否已挂接（preload onCommand 注册时发 ready 帧） */
-let rendererCommandReady = false
-
-ipcMain.on(COMMAND_READY_CHANNEL, (event) => {
-  if (avatarWindow && !avatarWindow.isDestroyed() && event.sender === avatarWindow.webContents) {
-    rendererCommandReady = true
-  }
-})
-
-ipcMain.on(COMMAND_RESULT_CHANNEL, (event, frame) => {
-  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) {
-    return
-  }
-  const normalized = normalizeCommandResultFrame(frame)
-  if (!normalized) {
-    console.warn('[live2d] 非法命令结果帧，已丢弃')
-    return
-  }
-  const pending = pendingCommands.get(normalized.requestId)
-  if (!pending) return
-  pendingCommands.delete(normalized.requestId)
-  clearTimeout(pending.timer)
-  pending.resolve(normalized.result)
-})
-
-/**
- * 向 renderer 发命令并等待结果（MCP 工具回调统一走这里）。
- * 所有失败路径都 resolve 为 { ok:false, error }，不 reject——MCP 工具层据此
- * 返回 isError 清晰降级。窗口/renderer 未挂接立即失败；超时 COMMAND_TIMEOUT_MS。
- */
-function sendRendererCommand(type, params) {
-  const win = avatarWindow
-  if (!win || win.isDestroyed()) {
-    return Promise.resolve({ ok: false, error: '角色窗不存在（可能已关闭）' })
-  }
-  if (!rendererCommandReady) {
-    return Promise.resolve({ ok: false, error: 'renderer 命令通道未挂接（页面加载中）' })
-  }
-  return new Promise((resolve) => {
-    const requestId = randomUUID()
-    const timer = setTimeout(() => {
-      pendingCommands.delete(requestId)
-      resolve({ ok: false, error: 'renderer 命令超时', timeout: true })
-    }, COMMAND_TIMEOUT_MS)
-    pendingCommands.set(requestId, { resolve, timer })
-    win.webContents.send(COMMAND_CHANNEL, { requestId, type, params })
-  })
-}
-
-// registerSchemesAsPrivileged 必须在 app ready 之前调用
+// Electron 硬约束：registerSchemesAsPrivileged 必须在 app ready 之前调用，
+// 因此**不能**收进 registerIpcHandlers()（那是 whenReady 里跑的），原位保留。
 protocol.registerSchemesAsPrivileged([
   {
     scheme: RENDERER_SCHEME,
@@ -217,6 +148,22 @@ let avatarWindow = null
 let settingsWindow = null
 let tray = null
 let isQuitting = false
+
+// ---------------------------------------------------- F5 main↔renderer 命令通道
+// MCP 视觉工具的执行路径：main 发 'live2d:command' { requestId, type, params } →
+// preload 窄校验后交 renderer 注册的 handler（renderer/src/main.ts）执行 Live2DApp →
+// 'live2d:command-result' 回传 { requestId, result }。
+// requestId 关联、超时、ready 门禁、窗口销毁冲销全在 renderer-command-channel.cjs
+// 内（有单测）；main 只提供 ipcMain 与「当前角色窗」两个注入点。
+const rendererCommandChannel = createRendererCommandChannel({
+  ipcMain,
+  getWindow: () => avatarWindow,
+})
+
+/** MCP 工具回调统一经此发命令；失败一律 resolve 为 { ok:false, error } 供清晰降级 */
+function sendRendererCommand(type, params) {
+  return rendererCommandChannel.send(type, params)
+}
 
 // -------------------------------------------------------- F6/F7 voice settings
 
@@ -266,7 +213,8 @@ function stopAudioListener() {
 
 /**
  * native listener 契约 → F3/F4 权威 voice 事件入口。
- * session 开启先进入 active/listening；activity/level 后续按 helper 流更新。
+ * session 开启先进入 active/listening；listening ⇄ speaking 由 renderer 的
+ * VoiceStateMachine 从同一条 level 流推导（main 侧不再重复推一遍）。
  */
 function startAudioListener() {
   for (const warning of voiceSourceConfig.warnings) {
@@ -288,10 +236,6 @@ function startAudioListener() {
           ? { phase: 'active', activity: 'listening' }
           : { phase: 'inactive', activity: 'idle' },
       })
-    },
-    onActivity: (activity) => {
-      if (audioListener !== listener) return
-      sendVoiceEvent(avatarWindow, { type: 'state', state: { activity } })
     },
     onLevel: (level) => {
       if (audioListener !== listener) return
@@ -447,25 +391,14 @@ function createWindow() {
   })
   // 冒烟/排障用：LIVE2D_RENDERER_LOG=1 时把 renderer console 汇入终端
   if (process.env.LIVE2D_RENDERER_LOG === '1') {
-    // 兼容签名差异：旧 (event, level, message, …) / 新 (details)
-    win.webContents.on('console-message', (...args) => {
-      const first = args[0]
-      const text =
-        typeof first === 'object' && first !== null && 'message' in first
-          ? first.message
-          : args.find((a) => typeof a === 'string')
-      if (text) console.log(`[renderer] ${text}`)
+    win.webContents.on('console-message', ({ message }) => {
+      if (message) console.log(`[renderer] ${message}`)
     })
   }
   win.on('closed', () => {
     if (avatarWindow === win) avatarWindow = null
     // 窗口销毁 → 命令通道失效；挂起中的命令立即失败（不等超时）
-    rendererCommandReady = false
-    for (const [requestId, pending] of pendingCommands) {
-      clearTimeout(pending.timer)
-      pending.resolve({ ok: false, error: '角色窗已关闭' })
-      pendingCommands.delete(requestId)
-    }
+    rendererCommandChannel.handleWindowClosed()
   })
 
   let allowedOrigin = RENDERER_ORIGIN
@@ -482,6 +415,30 @@ function createWindow() {
 
   void win.loadURL(url)
   return win
+}
+
+/**
+ * 「把角色窗露出来」的唯一机制：托盘菜单/托盘点击、macOS dock activate、
+ * 第二实例唤起、MCP control_window 全部收敛到这里，避免各处自写一套
+ * （此前 second-instance 会 restore 最小化窗口而 MCP show 不会）。
+ * @returns {object} 已显示的角色窗
+ */
+function showAvatarWindow() {
+  const win = createWindow()
+  if (win.isMinimized()) win.restore()
+  if (!win.isVisible()) win.show()
+  win.focus()
+  return win
+}
+
+/** 隐藏角色窗（与 showAvatarWindow 成对；只隐藏，不退出应用、不销毁窗口） */
+function hideAvatarWindow() {
+  if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide()
+}
+
+/** 角色窗当前是否可见（/health 与 MCP get_status 共用，避免两处各写一份判断） */
+function avatarWindowVisible() {
+  return Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible())
 }
 
 function createSettingsWindow() {
@@ -528,8 +485,8 @@ function createAppTray() {
     nativeImage,
     platform: process.platform,
     actions: {
-      showAvatar: () => windowAction('show'),
-      hideAvatar: () => windowAction('hide'),
+      showAvatar: () => showAvatarWindow(),
+      hideAvatar: () => hideAvatarWindow(),
       openSettings: () => createSettingsWindow(),
       quitApp: () => {
         isQuitting = true
@@ -548,46 +505,60 @@ function isSettingsSender(event) {
   )
 }
 
-ipcMain.handle(SETTINGS_GET_CHANNEL, (event) => {
-  if (!isSettingsSender(event)) throw new Error('settings IPC sender 非法')
-  return settingsViewModel()
-})
+/**
+ * 主进程 IPC 注册的单一入口，由 whenReady 调用，使注册时机显式而不再隐含在
+ * 文件行序里。命令通道的两个监听不在此处——它们随 rendererCommandChannel
+ * 创建时自注册（见 renderer-command-channel.cjs）。
+ */
+function registerIpcHandlers() {
+  ipcMain.handle(SETTINGS_GET_CHANNEL, (event) => {
+    if (!isSettingsSender(event)) throw new Error('settings IPC sender 非法')
+    return settingsViewModel()
+  })
 
-ipcMain.handle(SETTINGS_SAVE_CHANNEL, (event, voiceSource) => {
-  if (!isSettingsSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
-  if (!settingsStore) return { ok: false, error: '设置存储尚未就绪' }
-  try {
-    persistedSettings = settingsStore.save({ voiceSource })
-    const message = applyPersistedVoiceSource()
-    return { ok: true, view: settingsViewModel(message) }
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-      view: settingsViewModel(),
+  ipcMain.handle(SETTINGS_SAVE_CHANNEL, (event, voiceSource) => {
+    if (!isSettingsSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
+    if (!settingsStore) return { ok: false, error: '设置存储尚未就绪' }
+    try {
+      persistedSettings = settingsStore.save({ voiceSource })
+      const message = applyPersistedVoiceSource()
+      return { ok: true, view: settingsViewModel(message) }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        view: settingsViewModel(),
+      }
     }
-  }
-})
+  })
 
-ipcMain.handle(SETTINGS_COPY_CHANNEL, (event) => {
-  if (!isSettingsSender(event)) return false
-  clipboard.writeText(settingsViewModel().codexCommand)
-  return true
-})
+  ipcMain.handle(SETTINGS_COPY_CHANNEL, (event) => {
+    if (!isSettingsSender(event)) return false
+    clipboard.writeText(settingsViewModel().codexCommand)
+    return true
+  })
+
+  // F3 测试注入回环：renderer 调 window.live2d.injectVoice → 本监听 → 规范化 →
+  // 经 'live2d:voice' 送回同一 renderer（与 F4 真实推送走完全相同的 renderer 路径）。
+  // 未开 inject 标志时不注册，生产路径无注入面。
+  if (voiceInjectEnabled) {
+    ipcMain.on(VOICE_INJECT_CHANNEL, (event, raw) => {
+      const win = BrowserWindow.fromWebContents(event.sender) ?? avatarWindow
+      sendVoiceEvent(win, raw)
+    })
+  }
+}
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    const win = createWindow()
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
+    showAvatarWindow()
   })
 
   app.on('activate', () => {
-    windowAction('show')
+    showAvatarWindow()
   })
 
   app.whenReady().then(() => {
@@ -613,6 +584,7 @@ if (!gotSingleInstanceLock) {
     console.log('[live2d] 模型资源指引: 将 Cubism 4 模型放入 renderer/public/model/HiyoriPro/' +
       `（入口 ${MODEL_ENTRY_HINT}），并将 live2dcubismcore.min.js 放入 renderer/public/；`)
     console.log('[live2d] 缺模型时窗口内显示引导而不会崩溃（生产模式放入后需重新 bun run build）')
+    registerIpcHandlers()
     createAppTray()
     createWindow()
     startAudioListener()
@@ -630,46 +602,43 @@ function bridgePort() {
   return bridge?.address()?.port ?? null
 }
 
-/** /health 附加字段（尽力而为，不含用户内容；模型就绪 main 侧暂不可知 → null） */
-function bridgeHealthExtra() {
-  const win = avatarWindow
-  const port = bridgePort()
+/** MCP 端点摘要（/health 与 get_status 共用，避免两处对象字面量逐字重复） */
+function mcpEndpointSummary(port) {
   return {
-    // /health 保持 SPEC §8.3 稳定形状：main 侧不做 renderer 往返，模型真实状态
-    // 走 MCP get_status（F5）；本片起 mcp.implemented 如实标记 true
-    modelReady: null,
-    windowVisible: Boolean(win && !win.isDestroyed() && win.isVisible()),
+    path: MCP_PATH,
+    implemented: true,
+    url: port === null ? null : `http://${BRIDGE_HOST}:${port}${MCP_PATH}`,
+  }
+}
+
+/** /health 附加字段（尽力而为，不含用户内容） */
+function bridgeHealthExtra() {
+  return {
+    // /health 不做 renderer 往返；模型真实状态走 MCP get_status（F5）
+    windowVisible: avatarWindowVisible(),
     voiceInject: voiceInjectEnabled,
     listener: listenerSummary(),
-    mcp: {
-      path: MCP_PATH,
-      implemented: true,
-      url: port === null ? null : `http://${BRIDGE_HOST}:${port}${MCP_PATH}`,
-    },
+    mcp: mcpEndpointSummary(bridgePort()),
   }
 }
 
 // ------------------------------------------------------------------ F5 MCP 工具
 
-/** control_window：show/hide/toggle 真实作用于角色窗；hide 不退出应用 */
+/**
+ * control_window 的 MCP 适配层：把 show/hide/toggle 翻译成 showAvatarWindow /
+ * hideAvatarWindow，并按工具契约返回「操作后角色窗是否可见」。
+ * 显示语义本身不在这里实现——统一由 showAvatarWindow 提供。
+ */
 function windowAction(action) {
-  let win = avatarWindow
-  if (action === 'hide') {
-    if (win && !win.isDestroyed()) win.hide()
+  if (action === 'hide' || (action === 'toggle' && avatarWindowVisible())) {
+    hideAvatarWindow()
     return false
   }
   if (action === 'show' || action === 'toggle') {
-    const visible = Boolean(win && !win.isDestroyed() && win.isVisible())
-    if (action === 'toggle' && visible) {
-      win.hide()
-      return false
-    }
-    if (!win || win.isDestroyed()) win = createWindow()
-    if (!win.isVisible()) win.show()
-    win.focus()
+    showAvatarWindow()
     return true
   }
-  return Boolean(win && !win.isDestroyed() && win.isVisible())
+  return avatarWindowVisible()
 }
 
 /**
@@ -677,7 +646,7 @@ function windowAction(action) {
  * 往返成功 → ready:true + 计数摘要；模型未加载 → ready:false + 清晰错误。
  */
 async function modelStatusSummary() {
-  if (!rendererCommandReady) return { ready: null, note: 'renderer 命令通道未挂接' }
+  if (!rendererCommandChannel.isReady()) return { ready: null, note: 'renderer 命令通道未挂接' }
   const result = await sendRendererCommand('getModelInfo', {})
   if (result.ok) {
     const info = result.data ?? {}
@@ -694,21 +663,16 @@ async function modelStatusSummary() {
 
 /** MCP get_status 聚合（不含用户内容；voice 摘要与 /health 同源） */
 async function mcpStatus() {
-  const win = avatarWindow
   const port = bridgePort()
   return {
-    windowVisible: Boolean(win && !win.isDestroyed() && win.isVisible()),
+    windowVisible: avatarWindowVisible(),
     bridge: {
       port,
       url: port === null ? null : `http://${BRIDGE_HOST}:${port}`,
     },
     voice: bridge?.getVoiceSummary() ?? null,
     listener: listenerSummary(),
-    mcp: {
-      path: MCP_PATH,
-      implemented: true,
-      url: port === null ? null : `http://${BRIDGE_HOST}:${port}${MCP_PATH}`,
-    },
+    mcp: mcpEndpointSummary(port),
     model: await modelStatusSummary(),
   }
 }
@@ -722,8 +686,7 @@ const mcpController = {
   onMotion: ({ group, index, priority }) =>
     sendRendererCommand('playMotion', { group, index, priority }),
   onLookAt: ({ x, y }) => sendRendererCommand('lookAt', { x, y }),
-  onParameter: ({ paramId, value }) =>
-    sendRendererCommand('setParameter', { param_id: paramId, value }),
+  onParameter: ({ param_id, value }) => sendRendererCommand('setParameter', { param_id, value }),
   onReset: () => sendRendererCommand('reset', {}),
 }
 
@@ -770,6 +733,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   stopAudioListener()
+  rendererCommandChannel.dispose()
   if (tray && !tray.isDestroyed()) tray.destroy()
   tray = null
   if (mcpHandler) {

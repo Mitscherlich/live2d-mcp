@@ -55,6 +55,11 @@ export interface VoiceLipSync {
   handleEvent: (event: VoiceEvent) => void
   /** 每帧推进：静音保持判定 + 平滑 + 写嘴参；返回本次写入值 */
   tick: (dtMs: number) => number
+  /** 每帧读的标量访问器（不构造对象）：activity 变化检测走这里，别用 snapshot */
+  getActivity: () => VoiceActivity
+  /** 每帧读的标量访问器（不构造对象） */
+  getLevel: () => number
+  /** 完整快照：仅调试用（__live2dVoiceDebug / 证据脚本），每次调用新建对象 */
   snapshot: () => VoiceLipSyncSnapshot
 }
 
@@ -89,6 +94,14 @@ export function createVoiceLipSync(options: VoiceLipSyncOptions): VoiceLipSync {
     return value
   }
 
+  function getActivity(): VoiceActivity {
+    return machine.activity
+  }
+
+  function getLevel(): number {
+    return machine.level
+  }
+
   function snapshot(): VoiceLipSyncSnapshot {
     return {
       activity: machine.activity,
@@ -101,5 +114,5 @@ export function createVoiceLipSync(options: VoiceLipSyncOptions): VoiceLipSync {
     }
   }
 
-  return { handleEvent, tick, snapshot }
+  return { handleEvent, tick, getActivity, getLevel, snapshot }
 }

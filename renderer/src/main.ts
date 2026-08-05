@@ -1,92 +1,41 @@
 /**
  * 渲染器入口
  * 1. 初始化 Live2D 应用
- * 2. 建立 WebSocket 连接
- * 3. 绑定命令处理器
- * 4. 更新状态栏 UI
+ * 2. 挂接 voice 口型与 main→renderer 命令通道
+ * 3. 更新状态栏 UI
  */
 
 import type { Live2DApp } from './live2d-app.js'
-import { WsClient } from './ws-client.js'
-import { createCommandHandler } from './command-handler.js'
 import { createVoiceLipSync, type MouthParamTarget } from './lip-sync.js'
 import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
 
-// ADR 0001 · F2：Electron 壳经 preload 暴露 window.live2d；浏览器（legacy 双进程）无此对象
-const isElectron = typeof window.live2d !== 'undefined'
-
 /**
- * 顶部状态栏 + 底部调试条显示策略：
- *  - 纯 Web / legacy：始终显示
- *  - Electron 默认：隐藏（角色陪伴窗更干净）
- *  - Electron 调试：?debug=1 / ?ui=1 / #debug / localStorage live2d.uiChrome=1 /
- *    或 preload.uiChrome（LIVE2D_UI_CHROME / LIVE2D_DEVTOOLS / --live2d-ui-chrome）
- *  - LIVE2D_RENDERER_LOG 仅终端 console，不打开工具条
- *
- * 与 public/ui-chrome-boot.js 保持一致（boot 负责首屏，此处再同步一次 body class）。
+ * 顶部状态栏 + 底部调试条是否显示：**读 public/ui-chrome-boot.js 的判定结果**
+ * （boot 早于本模块执行、写在 documentElement 上以防首屏闪一下），此处不重复判定。
+ * 关闭时（默认的陪伴模式）：状态栏/调试面板被 CSS 隐藏，相关 DOM 一律不构建、不写入。
  */
-function shouldShowUiChrome(): boolean {
-  if (!isElectron) return true
-  if (window.live2d?.uiChrome === true) return true
-  try {
-    const q = new URLSearchParams(location.search)
-    if (q.get('debug') === '1' || q.get('ui') === '1') return true
-  } catch {
-    /* ignore */
-  }
-  if (typeof location.hash === 'string' && location.hash.includes('debug')) return true
-  try {
-    if (localStorage.getItem('live2d.uiChrome') === '1') return true
-  } catch {
-    /* ignore */
-  }
-  return false
-}
+const UI_CHROME = document.documentElement.classList.contains('ui-chrome')
 
 const canvas = document.getElementById('live2d-canvas') as HTMLCanvasElement
-const wsDot = document.getElementById('ws-dot') as HTMLDivElement
-const wsStatus = document.getElementById('ws-status') as HTMLSpanElement
 const modelDot = document.getElementById('model-dot') as HTMLDivElement
 const modelStatus = document.getElementById('model-status') as HTMLSpanElement
 const voiceDot = document.getElementById('voice-dot') as HTMLDivElement
 const voiceStatus = document.getElementById('voice-status') as HTMLSpanElement
 const currentStateEl = document.getElementById('current-state') as HTMLDivElement
-const debugPanel = document.getElementById('debug-panel') as HTMLDivElement
-const debugHeader = debugPanel.querySelector('.debug-header') as HTMLDivElement
-const debugToggleBtn = document.getElementById('debug-toggle-btn') as HTMLButtonElement
-const debugExpressionsEl = document.getElementById('debug-expressions') as HTMLDivElement
-const debugMotionsEl = document.getElementById('debug-motions') as HTMLDivElement
-const lookXInput = document.getElementById('look-x') as HTMLInputElement
-const lookXVal = document.getElementById('look-x-val') as HTMLSpanElement
-const lookYInput = document.getElementById('look-y') as HTMLInputElement
-const lookYVal = document.getElementById('look-y-val') as HTMLSpanElement
-const debugResetBtn = document.getElementById('debug-reset') as HTMLButtonElement
-const debugClickLog = document.getElementById('debug-click-log') as HTMLDivElement
-const hitareaToggle = document.getElementById('hitarea-toggle') as HTMLInputElement
-const mouseFollowCheckbox = document.getElementById('mouse-follow') as HTMLInputElement
 
 let currentExpression = '-'
 let currentMotion = '-'
 
-const MOTION_NAMES: Record<string, string> = {
-  'Idle:0': '待机',
-  'Idle:1': '待机 2',
-  'Idle:2': '待机 3',
-  'Flick:0': '拨动',
-  'FlickDown:0': '低头',
-  'FlickUp:0': '抬头',
-  'Tap:0': '点击',
-  'Tap:1': '点击反应',
-  'Tap@Body:0': '触摸身体',
-  'Flick@Body:0': '挥手 (wave)',
-}
+/** 鼠标跟随：陪伴模式的真实功能，默认开启；调试面板的 checkbox 只是它的一个开关 */
+let mouseFollowEnabled = true
 
-function motionLabel(group: string, index?: number): string {
-  const key = `${group}:${index ?? 0}`
-  return MOTION_NAMES[key] ?? `${group}[${index ?? 'rand'}]`
+/** 状态栏用的动作标识：直接用模型原始 group/index，换模型也不退化 */
+function motionTag(group: string, index?: number): string {
+  return `${group}[${index ?? 'rand'}]`
 }
 
 function updateStateBar() {
+  if (!UI_CHROME) return
   currentStateEl.textContent = `表情: ${currentExpression} | 动作: ${currentMotion}`
 }
 
@@ -96,6 +45,9 @@ const HIT_AREA_MOTIONS: Record<string, string> = {
 }
 
 function appendClickLog(px: number, py: number, hitAreas: string[], action: string | null) {
+  if (!UI_CHROME) return
+  const debugClickLog = document.getElementById('debug-click-log')
+  if (!debugClickLog) return
   const entry = document.createElement('div')
   entry.className = 'click-log-entry'
   const coord = `(${Math.round(px)}, ${Math.round(py)})`
@@ -117,9 +69,20 @@ function appendClickLog(px: number, py: number, hitAreas: string[], action: stri
   if (logPane) logPane.scrollTop = logPane.scrollHeight
 }
 
+/** canvas 位置/尺寸缓存：mousemove 每次 getBoundingClientRect 会强制布局 */
+let canvasRect: DOMRect | null = null
+function getCanvasRect(): DOMRect {
+  if (!canvasRect) canvasRect = canvas.getBoundingClientRect()
+  return canvasRect
+}
+window.addEventListener('resize', () => {
+  canvasRect = null
+})
+
+/** 点击触发动作：陪伴模式真实功能，无条件挂接 */
 function initClickInteraction(app: Live2DApp) {
   canvas.addEventListener('pointerdown', (e: PointerEvent) => {
-    const rect = canvas.getBoundingClientRect()
+    const rect = getCanvasRect()
     // 转换为 canvas 物理像素坐标（考虑 devicePixelRatio 缩放）
     const scaleX = canvas.width / rect.width
     const scaleY = canvas.height / rect.height
@@ -142,40 +105,74 @@ function initClickInteraction(app: Live2DApp) {
     }
 
     app.playMotion(group, undefined, 2)
-    currentMotion = group
+    currentMotion = motionTag(group)
     updateStateBar()
     appendClickLog(x, y, hitAreas, group)
   })
 }
 
+/**
+ * 鼠标跟随：陪伴模式真实功能，无条件挂接，不依赖任何调试 DOM。
+ * mousemove 只记录目标坐标 + 置脏，实际 lookAt 每帧最多一次
+ * （focus 控制器本就按帧插值，按事件频率调用纯属浪费）。
+ */
 function initMouseFollow(app: Live2DApp) {
-  function setSliderDisabled(disabled: boolean) {
-    lookXInput.disabled = disabled
-    lookYInput.disabled = disabled
-  }
-
-  // 默认开启，禁用手动滑块
-  setSliderDisabled(true)
+  let targetX = 0
+  let targetY = 0
+  let dirty = false
 
   window.addEventListener('mousemove', (e: MouseEvent) => {
-    if (!mouseFollowCheckbox.checked) return
-    const rect = canvas.getBoundingClientRect()
-    const x = Math.max(-1, Math.min(1, (e.clientX - rect.left - rect.width / 2) / (rect.width / 2)))
-    const y = Math.max(-1, Math.min(1, -((e.clientY - rect.top - rect.height / 2) / (rect.height / 2))))
-    app.lookAt(x, y)
+    if (!mouseFollowEnabled) return
+    const rect = getCanvasRect()
+    targetX = Math.max(-1, Math.min(1, (e.clientX - rect.left - rect.width / 2) / (rect.width / 2)))
+    targetY = Math.max(-1, Math.min(1, -((e.clientY - rect.top - rect.height / 2) / (rect.height / 2))))
+    dirty = true
   })
 
-  mouseFollowCheckbox.addEventListener('change', () => {
-    const following = mouseFollowCheckbox.checked
-    setSliderDisabled(following)
-    if (!following) {
-      // 关闭时重置视线到滑块当前值
-      app.lookAt(parseFloat(lookXInput.value), parseFloat(lookYInput.value))
-    }
+  app.addTicker(() => {
+    if (!dirty) return
+    dirty = false
+    app.lookAt(targetX, targetY)
   })
 }
 
+/**
+ * 底部调试抽屉：**仅 ui-chrome 开启时构建**。
+ * 陪伴模式下这些 DOM 被 CSS 隐藏，按钮/监听全部白做，故整段不执行。
+ */
 function initDebugPanel(app: Live2DApp) {
+  const debugPanel = document.getElementById('debug-panel') as HTMLDivElement
+  const debugHeader = debugPanel.querySelector('.debug-header') as HTMLDivElement
+  const debugToggleBtn = document.getElementById('debug-toggle-btn') as HTMLButtonElement
+  const debugExpressionsEl = document.getElementById('debug-expressions') as HTMLDivElement
+  const debugMotionsEl = document.getElementById('debug-motions') as HTMLDivElement
+  const lookXInput = document.getElementById('look-x') as HTMLInputElement
+  const lookXVal = document.getElementById('look-x-val') as HTMLSpanElement
+  const lookYInput = document.getElementById('look-y') as HTMLInputElement
+  const lookYVal = document.getElementById('look-y-val') as HTMLSpanElement
+  const debugResetBtn = document.getElementById('debug-reset') as HTMLButtonElement
+  const hitareaToggle = document.getElementById('hitarea-toggle') as HTMLInputElement
+  const mouseFollowCheckbox = document.getElementById('mouse-follow') as HTMLInputElement
+
+  /**
+   * 动作译名：HiyoriPro 专属，只用于调试面板的按钮文案。
+   * 命令通道 / voice 体态等主路径一律用 motionTag() 的原始 group/index。
+   */
+  const MOTION_NAMES: Record<string, string> = {
+    'Idle:0': '待机',
+    'Idle:1': '待机 2',
+    'Idle:2': '待机 3',
+    'Flick:0': '拨动',
+    'FlickDown:0': '低头',
+    'FlickUp:0': '抬头',
+    'Tap:0': '点击',
+    'Tap:1': '点击反应',
+    'Tap@Body:0': '触摸身体',
+    'Flick@Body:0': '挥手 (wave)',
+  }
+  const motionLabel = (group: string, index: number): string =>
+    MOTION_NAMES[`${group}:${index}`] ?? motionTag(group, index)
+
   // 展开/收起：仅 toggle 按钮触发
   debugToggleBtn.addEventListener('click', () => {
     const expanded = debugPanel.classList.toggle('expanded')
@@ -248,7 +245,11 @@ function initDebugPanel(app: Live2DApp) {
     }
   }
 
-  // 视线控制
+  // 视线控制：鼠标跟随开启时滑块禁用
+  function setSliderDisabled(disabled: boolean) {
+    lookXInput.disabled = disabled
+    lookYInput.disabled = disabled
+  }
   function applyLookAt() {
     const x = parseFloat(lookXInput.value)
     const y = parseFloat(lookYInput.value)
@@ -259,6 +260,20 @@ function initDebugPanel(app: Live2DApp) {
   lookXInput.addEventListener('input', applyLookAt)
   lookYInput.addEventListener('input', applyLookAt)
 
+  mouseFollowCheckbox.checked = mouseFollowEnabled
+  setSliderDisabled(mouseFollowEnabled)
+  mouseFollowCheckbox.addEventListener('change', () => {
+    mouseFollowEnabled = mouseFollowCheckbox.checked
+    setSliderDisabled(mouseFollowEnabled)
+    // 关闭时重置视线到滑块当前值
+    if (!mouseFollowEnabled) app.lookAt(parseFloat(lookXInput.value), parseFloat(lookYInput.value))
+  })
+
+  // HitArea 边框 overlay（每帧重绘，仅调试用）
+  hitareaToggle.addEventListener('change', () => {
+    app.showHitAreaOverlay(hitareaToggle.checked)
+  })
+
   // 重置
   debugResetBtn.addEventListener('click', () => {
     app.reset()
@@ -266,7 +281,7 @@ function initDebugPanel(app: Live2DApp) {
     lookYInput.value = '0'
     lookXVal.textContent = '0.00'
     lookYVal.textContent = '0.00'
-    if (!mouseFollowCheckbox.checked) app.lookAt(0, 0)
+    if (!mouseFollowEnabled) app.lookAt(0, 0)
     activeExprBtn?.classList.remove('active')
     activeExprBtn = null
     activeBtn?.classList.remove('active')
@@ -324,32 +339,39 @@ function initVoiceLipSync(app: Live2DApp | null) {
     if (activity === 'speaking') {
       // priority 2：体态；口型仍由 LOW ticker 在 motion 之后写 ParamMouthOpenY
       app.playMotion('Idle', -1, 2)
-      currentMotion = motionLabel('Idle')
+      currentMotion = motionTag('Idle')
       updateStateBar()
       return
     }
     if (activity === 'listening' || activity === 'idle') {
       app.playMotion('Idle', -1, 1)
-      currentMotion = motionLabel('Idle')
+      currentMotion = motionTag('Idle')
       updateStateBar()
     }
   }
 
   let shownActivity: VoiceActivity | '' = ''
   let lastShownLevel = -1
-  function syncVoiceUI(force = false) {
-    const snap = lip.snapshot()
-    const activity = snap.activity
-    const level = snap.level
+  /**
+   * 每帧 + 每条事件调用。activity 变化可能由 tick 触发（900ms 静音保持到期回落），
+   * 不只由事件触发，所以体态检测必须留在每帧；DOM 写入则只在 ui-chrome 下做。
+   * 用标量访问器比较，避免每帧构造快照对象。
+   */
+  function syncVoice(force = false) {
+    const activity = lip.getActivity()
     const activityChanged = activity !== shownActivity
     if (activityChanged) {
       shownActivity = activity
+      applyVoiceBodyMotion(activity)
+      console.log(`[Voice] activity → ${activity} (level=${lip.getLevel().toFixed(3)})`)
+    }
+    if (!UI_CHROME) return
+    if (activityChanged) {
       voiceDot.classList.toggle('listening', activity === 'listening')
       voiceDot.classList.toggle('speaking', activity === 'speaking')
-      applyVoiceBodyMotion(activity)
-      console.log(`[Voice] activity → ${activity} (level=${level.toFixed(3)})`)
     }
     // 状态栏展示电平，便于确认「Codex 出声」是否被采到（非用户麦克风）
+    const level = lip.getLevel()
     const levelBucket = Math.round(level * 20) / 20
     if (force || activityChanged || levelBucket !== lastShownLevel) {
       lastShownLevel = levelBucket
@@ -357,19 +379,19 @@ function initVoiceLipSync(app: Live2DApp | null) {
       voiceStatus.textContent = `助手语音 ${activity}${levelStr}`
     }
   }
-  syncVoiceUI(true)
+  syncVoice(true)
 
   const offVoice = window.live2d?.onVoiceEvent?.((event) => {
     lip.handleEvent(event)
     // 立即刷 UI（不等下一帧），便于 live-voice 出声瞬间看到 speaking
-    syncVoiceUI()
+    syncVoice()
   })
   if (!offVoice) console.warn('[Voice] preload 未暴露 onVoiceEvent，voice 通道不可用')
 
   if (app) {
     app.addTicker((dt) => {
       lip.tick(dt)
-      syncVoiceUI()
+      syncVoice()
     })
   } else {
     let prev = performance.now()
@@ -377,7 +399,7 @@ function initVoiceLipSync(app: Live2DApp | null) {
       const dt = t - prev
       prev = t
       lip.tick(dt)
-      syncVoiceUI()
+      syncVoice()
       requestAnimationFrame(frame)
     }
     requestAnimationFrame(frame)
@@ -449,7 +471,7 @@ function initCommandChannel(app: Live2DApp | null) {
         const priority = typeof params.priority === 'number' ? Math.trunc(params.priority) : 2
         const ok = group !== '' && live2d.playMotion(group, index, priority)
         if (ok) {
-          currentMotion = motionLabel(group, index >= 0 ? index : undefined)
+          currentMotion = motionTag(group, index >= 0 ? index : undefined)
           updateStateBar()
           return { ok: true, data: { group, index, priority } }
         }
@@ -501,24 +523,19 @@ function initCommandChannel(app: Live2DApp | null) {
 }
 
 async function main() {
-  if (isElectron) {
-    // Electron 壳：透明底；默认隐藏顶/底工具条（见 index.html electron-mode:not(.ui-chrome)）
-    // boot 脚本可能已写过 html class；这里同步到 body 并按需打开 ui-chrome。
-    document.documentElement.classList.add('electron-mode')
-    document.body.classList.add('electron-mode')
-    if (shouldShowUiChrome()) {
-      document.documentElement.classList.add('ui-chrome')
-      document.body.classList.add('ui-chrome')
-      console.log('[Main] UI chrome 已开启（调试/显式开关）')
-    } else {
-      document.documentElement.classList.remove('ui-chrome')
-      document.body.classList.remove('ui-chrome')
-      console.log('[Main] UI chrome 已隐藏（Electron 陪伴模式；调试用 LIVE2D_UI_CHROME=1 或 ?debug=1）')
-    }
-    console.log(
-      `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`,
-    )
+  // Electron 壳：透明底；顶/底工具条默认隐藏（见 index.html electron-mode:not(.ui-chrome)）。
+  // ui-chrome 由 boot 脚本判定并写在 documentElement 上，这里只同步到 body。
+  document.documentElement.classList.add('electron-mode')
+  document.body.classList.add('electron-mode')
+  if (UI_CHROME) {
+    document.body.classList.add('ui-chrome')
+    console.log('[Main] UI chrome 已开启（调试/显式开关）')
+  } else {
+    console.log('[Main] UI chrome 已隐藏（陪伴模式；调试用 LIVE2D_UI_CHROME=1 或 ?debug=1）')
   }
+  console.log(
+    `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`,
+  )
 
   // 动态导入渲染核心：pixi-live2d-display/cubism4 在缺少 live2dcubismcore.min.js 时于
   // 模块加载期抛错（"Could not find Cubism 4 runtime"）；静态 import 会带走整个入口，
@@ -540,81 +557,22 @@ async function main() {
       modelDot.classList.add('connected')
       modelStatus.textContent = '模型已加载'
       console.log('[Main] Live2D app initialized')
-      initDebugPanel(live2d)
+      // 鼠标跟随 / 点击触发动作是陪伴模式的真实功能；调试面板只在 ui-chrome 下构建
       initMouseFollow(live2d)
       initClickInteraction(live2d)
-
-      hitareaToggle.addEventListener('change', () => {
-        live2d.showHitAreaOverlay(hitareaToggle.checked)
-      })
+      if (UI_CHROME) initDebugPanel(live2d)
     } catch (e) {
       modelStatus.textContent = '模型加载失败'
       showModelLoadError()
       console.error('[Main] Failed to initialize Live2D:', e)
-      // 即使模型加载失败，legacy 路径仍尝试连接 WS（方便调试）
     }
   }
 
-  if (isElectron) {
-    // Electron 一体化默认路径：voice 事件由 main 经 preload IPC 推送（F3/F4），
-    // 表情/动作等视觉命令自 F5 起经 main↔renderer 命令通道执行（本片挂接）。
-    // 不连接遗留 WS；WS 缺席绝不允许阻断模型渲染与口型驱动（SPEC §10.3 降级要求）。
-    initVoiceLipSync(app)
-    initCommandChannel(app)
-    wsDot.classList.add('electron')
-    wsStatus.textContent = 'Electron 模式（voice + MCP 命令通道已接入）'
-    return
-  }
-
-  // 以下为 legacy 浏览器路径：连接独立 mcp-server 的 WS bridge（dev:legacy）
-  if (!app) {
-    // 渲染核心缺失（Cubism Core 未加载）：命令处理无从附着，不再连接 WS
-    wsStatus.textContent = '渲染核心未加载，未连接 WS'
-    return
-  }
-  const live2dApp = app
-
-  // 初始化 WebSocket 客户端
-  const wsClient = new WsClient()
-
-  // 绑定命令处理器（包装一层，同时更新 UI）
-  const rawHandler = createCommandHandler(live2dApp)
-  wsClient.setCommandHandler(async (command) => {
-    const response = await rawHandler(command)
-
-    // 更新状态栏
-    if (response.success) {
-      if (command.type === 'setExpression') {
-        currentExpression = command.params.expression as string
-      } else if (command.type === 'playMotion') {
-        currentMotion = motionLabel(command.params.group as string, command.params.index as number | undefined)
-      } else if (command.type === 'reset') {
-        currentExpression = '-'
-        currentMotion = '-'
-      }
-      updateStateBar()
-    }
-
-    return response
-  })
-
-  wsClient.onConnect(() => {
-    wsDot.classList.add('connected')
-    wsStatus.textContent = 'WebSocket 已连接'
-
-    // 发送就绪通知，携带模型信息
-    const modelInfo = live2dApp.getModelInfo()
-    if (modelInfo) {
-      wsClient.sendReady(modelInfo)
-    }
-  })
-
-  wsClient.onDisconnect(() => {
-    wsDot.classList.remove('connected')
-    wsStatus.textContent = 'WebSocket 未连接（重连中...）'
-  })
-
-  wsClient.connect()
+  // voice 事件由 main 经 preload IPC 推送（F3/F4），表情/动作等视觉命令自 F5 起
+  // 经 main↔renderer 命令通道执行。模型缺失绝不允许阻断这两条通道的挂接
+  // （SPEC §10.3 降级要求）。
+  initVoiceLipSync(app)
+  initCommandChannel(app)
 }
 
 main().catch(console.error)

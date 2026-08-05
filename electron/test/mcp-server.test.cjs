@@ -14,6 +14,7 @@
  *  - 非法参数（枚举外 action、越界 priority/index、非数字 value、空串/控制字符名、
  *    缺参）一律 isError 拒绝，且 controller 零调用
  *  - 无 session 的非 initialize POST → 400 JSON-RPC 错误
+ *  - session 生命周期（注入假时钟）：活跃刷新、空闲超时清扫、达上限驱逐最久未活动者
  */
 
 const test = require('node:test')
@@ -24,13 +25,15 @@ const {
   StreamableHTTPClientTransport,
 } = require('@modelcontextprotocol/sdk/client/streamableHttp.js')
 
-const { createBridgeServer } = require('../bridge-server.cjs')
+const { MCP_PATH } = require('../mcp-protocol.cjs')
 const {
-  MCP_PATH,
+  MAX_SESSIONS,
   SERVER_INSTRUCTIONS,
   SERVER_NAME,
+  SESSION_IDLE_TIMEOUT_MS,
   createLive2dMcpHandler,
 } = require('../mcp-server.cjs')
+const { resultJson, startBridge } = require('./helpers/bridge.cjs')
 
 const EXPECTED_TOOLS = [
   'get_status',
@@ -109,30 +112,66 @@ function makeController({ modelLoaded = true } = {}) {
   return controller
 }
 
-/** 起 bridge + 真 mcpHandler + 官方 client；返回 { client, controller, baseUrl, close } */
-async function startMcp(opts) {
-  const controller = makeController(opts)
-  const mcpHandler = createLive2dMcpHandler(controller)
-  const bridge = createBridgeServer({ port: 0, onEvent: () => true, mcpHandler })
-  const address = await bridge.listen()
-  const baseUrl = `http://127.0.0.1:${address.port}`
+/**
+ * 起 bridge + 真 mcpHandler + 官方 client；返回 { client, controller, mcpHandler, baseUrl, close }
+ * @param {object} [opts] modelLoaded 透传给 stub controller；now 为注入 handler 的假时钟
+ */
+async function startMcp(opts = {}) {
+  const { now, ...controllerOpts } = opts
+  const controller = makeController(controllerOpts)
+  const mcpHandler = createLive2dMcpHandler(controller, now ? { now } : undefined)
+  const { baseUrl, close: closeBridge } = await startBridge({ mcpHandler })
   const client = new Client({ name: 'mcp-test', version: '0.0.1' })
   await client.connect(new StreamableHTTPClientTransport(new URL(`${baseUrl}${MCP_PATH}`)))
   return {
     client,
     controller,
+    mcpHandler,
     baseUrl,
     close: async () => {
       await client.close()
       await mcpHandler.close()
-      await bridge.close()
+      await closeBridge()
     },
   }
 }
 
-function resultJson(result) {
-  assert.ok(result.content?.[0]?.type === 'text', '工具结果应为 text content')
-  return JSON.parse(result.content[0].text)
+const MCP_ACCEPT = 'application/json, text/event-stream'
+
+/** 裸 HTTP 发 initialize 建一个 session，返回其 sessionId（绕开 SDK client，便于批量建 session） */
+async function initializeSession(baseUrl) {
+  const response = await fetch(`${baseUrl}${MCP_PATH}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: MCP_ACCEPT },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'session-lifecycle-test', version: '0.0.1' },
+      },
+    }),
+  })
+  await response.text() // 读完 body，避免连接悬挂
+  assert.equal(response.status, 200, 'initialize 应成功')
+  return response.headers.get('mcp-session-id')
+}
+
+/** 裸 HTTP 用指定 session id 发一次 tools/list，返回 HTTP 状态码 */
+async function toolsListStatus(baseUrl, sessionId) {
+  const response = await fetch(`${baseUrl}${MCP_PATH}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: MCP_ACCEPT,
+      'mcp-session-id': sessionId,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+  })
+  await response.text()
+  return response.status
 }
 
 test('tools/list 恰好含约定 8 工具，无 speak/lip_sync/TTS 痕迹', async () => {
@@ -250,7 +289,7 @@ test('set_expression / play_motion / look_at / set_parameter / reset 参数透�
       ['play_motion', { group: 'Tap', index: 1, priority: 3 }],
       ['play_motion', { group: 'Idle', index: -1, priority: 2 }],
       ['look_at', { x: 0.5, y: -0.5 }],
-      ['set_parameter', { paramId: 'ParamMouthOpenY', value: 0.7 }],
+      ['set_parameter', { param_id: 'ParamMouthOpenY', value: 0.7 }],
       ['reset'],
     ])
   } finally {
@@ -371,4 +410,84 @@ test('HTTP 边界：无 session 的非 initialize POST → 400 JSON-RPC 错误�
 
 test('server 元信息：live2d 系名字', () => {
   assert.equal(SERVER_NAME, 'live2d-companion')
+})
+
+test('session 活跃刷新：临近空闲上限时的正常请求刷新 lastSeenAt，不被清扫', async () => {
+  let clock = 1_000_000
+  const { client, mcpHandler, baseUrl, close } = await startMcp({ now: () => clock })
+  try {
+    const [connected] = mcpHandler.debugSessions()
+    assert.equal(connected.lastSeenAt, clock, '新建 session 应记录 lastSeenAt')
+
+    // 推进到距空闲上限还差 1 分钟，发一次正常请求 → lastSeenAt 被刷新
+    clock += SESSION_IDLE_TIMEOUT_MS - 60_000
+    await client.callTool({ name: 'get_status', arguments: {} })
+    assert.equal(mcpHandler.debugSessions()[0].lastSeenAt, clock, '命中已有 session 应刷新')
+
+    // 再推进 1 分钟（若未刷新则早已超时），新 initialize 触发清扫
+    clock += 60_000
+    const fresh = await initializeSession(baseUrl)
+    const ids = mcpHandler.debugSessions().map((session) => session.sessionId)
+    assert.deepEqual(ids.sort(), [connected.sessionId, fresh].sort(), '活跃 session 不应被清扫')
+    assert.equal(await toolsListStatus(baseUrl, connected.sessionId), 200)
+  } finally {
+    await close()
+  }
+})
+
+// 注：以下清扫/驱逐断言只针对裸 HTTP 建的 session。SDK client 有后台请求
+// （SSE 重连等）会真实刷新自己的 lastSeenAt，那正是"活跃刷新"的预期行为，
+// 不适合当作"静默超时"的被试。裸 fetch 建的 session 不发任何后台请求，确定性可控。
+
+test('session 空闲清扫：超时 session 在下次 initialize 时被回收，旧 id 再请求 → 404', async () => {
+  let clock = 5_000
+  const { mcpHandler, baseUrl, close } = await startMcp({ now: () => clock })
+  try {
+    // 模拟两个被 SIGKILL 的客户端：建完 session 后再无任何请求，也永远不会发 DELETE
+    const killed = [await initializeSession(baseUrl), await initializeSession(baseUrl)]
+    assert.equal(mcpHandler.debugSessions().length, 3, '客户端 session + 2 个裸 HTTP session')
+
+    clock += SESSION_IDLE_TIMEOUT_MS + 1
+    const fresh = await initializeSession(baseUrl)
+
+    const remaining = mcpHandler.debugSessions().map((session) => session.sessionId)
+    for (const id of killed) {
+      assert.ok(!remaining.includes(id), '空闲超时的 session 应被清扫出 Map')
+      assert.equal(await toolsListStatus(baseUrl, id), 404, '被清扫的 session id 应 404')
+    }
+    assert.ok(remaining.includes(fresh), '新建的 session 应保留')
+  } finally {
+    await close()
+  }
+})
+
+test('session 上限：达到 MAX_SESSIONS 时驱逐最久未活动的 session', async () => {
+  let clock = 1_000
+  const { client, mcpHandler, baseUrl, close } = await startMcp({ now: () => clock })
+  try {
+    clock = 2_000
+    const idle = await initializeSession(baseUrl) // 此后再无请求 → 全场最久未活动
+    clock = 3_000
+    await client.callTool({ name: 'get_status', arguments: {} }) // 客户端 session 排到 idle 之后
+
+    // 补满到 MAX_SESSIONS，各自 lastSeenAt 依次递增（间隔远小于空闲上限，均不会被清扫）
+    const filled = []
+    while (mcpHandler.debugSessions().length < MAX_SESSIONS) {
+      clock += 1_000
+      filled.push(await initializeSession(baseUrl))
+    }
+    assert.equal(mcpHandler.debugSessions().length, MAX_SESSIONS)
+
+    clock += 1_000
+    const fresh = await initializeSession(baseUrl)
+    const after = mcpHandler.debugSessions().map((session) => session.sessionId)
+
+    assert.equal(after.length, MAX_SESSIONS, 'session 总数不得超过上限')
+    assert.ok(!after.includes(idle), '最久未活动的 session 应被驱逐')
+    assert.ok(after.includes(fresh), '新 session 应入表')
+    assert.ok(after.includes(filled[0]), '次久未活动的 session 不应被误驱逐')
+    assert.equal(await toolsListStatus(baseUrl, idle), 404, '被驱逐的 session 应 404')
+  } finally {
+    await close()
+  }
 })

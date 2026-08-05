@@ -39,6 +39,16 @@ export class Live2DApp {
   private model: Live2DModel | null = null
   private modelInfo: ModelInfo | null = null
   private hitAreaGraphics: PIXI.Graphics | null = null
+  /** hitArea id → drawable 下标：overlay 开启时建一次，关闭时丢弃（每帧全量查 ids 太贵） */
+  private hitAreaDrawables: Map<string, number> | null = null
+  /** overlay 每帧复用的点，避免每区域 new PIXI.Point ×4 */
+  private readonly overlayIn = new PIXI.Point()
+  private readonly overlayOut = [
+    new PIXI.Point(),
+    new PIXI.Point(),
+    new PIXI.Point(),
+    new PIXI.Point(),
+  ]
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
     // Electron 透明窗 + WebGL：需要 alpha 通道与 premultipliedAlpha，
@@ -332,56 +342,85 @@ export class Live2DApp {
         this.hitAreaGraphics.destroy()
         this.hitAreaGraphics = null
       }
+      this.hitAreaDrawables = null
       return
     }
     if (this.hitAreaGraphics) return
+    this.hitAreaDrawables = this.buildHitAreaDrawables()
     this.hitAreaGraphics = new PIXI.Graphics()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.app.stage.addChild(this.hitAreaGraphics as any)
     this.app.ticker.add(this.drawHitAreaOverlay, this)
   }
 
+  /**
+   * hitArea id → drawable 下标，overlay 开启时解析一次。
+   * drawables.ids 有数百项，每帧 Array.from + indexOf 是纯浪费（模型加载后不变）。
+   */
+  private buildHitAreaDrawables(): Map<string, number> {
+    const map = new Map<string, number>()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internalModel = (this.model as any)?.internalModel
+    const hitAreas: Array<{ Id?: string; id?: string }> = internalModel?.settings?.hitAreas ?? []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const coreModel = internalModel?.coreModel as any
+    let ids: string[] | null = null
+    try {
+      // 方式 A: drawables 属性数组（pixi-live2d-display 封装）
+      if (coreModel?.drawables?.ids) ids = Array.from(coreModel.drawables.ids as ArrayLike<string>)
+    } catch {
+      ids = null
+    }
+
+    for (const area of hitAreas) {
+      const areaId = area.Id ?? area.id ?? ''
+      if (!areaId) continue
+      let idx = ids ? ids.indexOf(areaId) : -1
+      // 方式 B: getDrawableIndex（直接 Cubism SDK API）
+      if (idx < 0 && typeof coreModel?.getDrawableIndex === 'function') {
+        try {
+          idx = coreModel.getDrawableIndex(areaId)
+        } catch {
+          idx = -1
+        }
+      }
+      if (idx >= 0) map.set(areaId, idx)
+    }
+    if (map.size === 0) console.warn('[Live2D] HitArea overlay：未解析到任何可绘制区域')
+    return map
+  }
+
   private drawHitAreaOverlay(): void {
     const g = this.hitAreaGraphics
-    if (!g || !this.model) return
+    if (!g || !this.model || !this.hitAreaDrawables) return
     g.clear()
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const internalModel = (this.model as any).internalModel
-    const hitAreas: Array<{ Id?: string; id?: string; Name?: string; name?: string }> =
-      internalModel?.settings?.hitAreas ?? []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const coreModel = internalModel?.coreModel as any
 
     // getDrawableVertexPositions 返回 Cubism NDC 坐标（原点在模型中心，Y 轴向上，范围 [-1,1]）
     // worldTransform.apply 期望纹理空间坐标（原点左上角，Y 轴向下，[0, originalWidth] × [0, originalHeight]）
     // 需要先做坐标系转换：texX = (cx + 1) * halfW，texY = (1 - cy) * halfH
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const halfW: number = (internalModel?.originalWidth ?? 0) / 2
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const halfH: number = (internalModel?.originalHeight ?? 0) / 2
+    if (halfW === 0 || halfH === 0) return
 
-    for (const area of hitAreas) {
-      const areaId = area.Id ?? area.id ?? ''
+    const wt = (this.model as unknown as { worldTransform: PIXI.Matrix }).worldTransform
+    const [tl, tr, br, bl] = this.overlayOut
 
+    for (const idx of this.hitAreaDrawables.values()) {
       let vertices: Float32Array | undefined
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const coreModel = internalModel?.coreModel as any
-        // 方式 A: drawables 属性数组（pixi-live2d-display 封装）
-        if (coreModel?.drawables?.ids) {
-          const ids: string[] = Array.from(coreModel.drawables.ids as ArrayLike<string>)
-          const idx = ids.indexOf(areaId)
-          if (idx >= 0) vertices = coreModel.drawables.vertexPositions?.[idx]
-        }
-        // 方式 B: getDrawable* 方法（直接 Cubism SDK API）
-        if (!vertices && typeof coreModel?.getDrawableIndex === 'function') {
-          const idx: number = coreModel.getDrawableIndex(areaId)
-          if (idx >= 0) vertices = coreModel.getDrawableVertexPositions?.(idx)
-        }
+        vertices =
+          coreModel?.drawables?.vertexPositions?.[idx] ??
+          coreModel?.getDrawableVertexPositions?.(idx)
       } catch {
         continue
       }
 
-      if (!vertices || vertices.length < 4 || halfW === 0 || halfH === 0) continue
+      if (!vertices || vertices.length < 4) continue
 
       // Cubism NDC → 纹理空间坐标，计算 AABB
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -394,12 +433,15 @@ export class Live2DApp {
         if (ty > maxY) maxY = ty
       }
 
-      // 纹理空间坐标 → canvas 坐标（通过 worldTransform）
-      const wt = (this.model as unknown as { worldTransform: PIXI.Matrix }).worldTransform
-      const tl = wt.apply(new PIXI.Point(minX, minY))
-      const tr = wt.apply(new PIXI.Point(maxX, minY))
-      const br = wt.apply(new PIXI.Point(maxX, maxY))
-      const bl = wt.apply(new PIXI.Point(minX, maxY))
+      // 纹理空间坐标 → canvas 坐标（通过 worldTransform；点实例复用，零分配）
+      this.overlayIn.set(minX, minY)
+      wt.apply(this.overlayIn, tl)
+      this.overlayIn.set(maxX, minY)
+      wt.apply(this.overlayIn, tr)
+      this.overlayIn.set(maxX, maxY)
+      wt.apply(this.overlayIn, br)
+      this.overlayIn.set(minX, maxY)
+      wt.apply(this.overlayIn, bl)
 
       g.lineStyle(1.5, 0x64b4ff, 0.85)
       g.beginFill(0x64b4ff, 0.07)

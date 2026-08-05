@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- NFR-2：消除 Electron Insecure-CSP 告警。script 仅同源（无 inline/eval）；
          wasm-unsafe-eval：Live2D Cubism Core 的 Emscripten WASM 需要；
-         style 允许 inline（本页 <style> 块）；connect 放行 legacy WS（localhost:8765）
-         与 Vite dev HMR（ws 同源端口）。live2d-app:// 自定义 scheme 下 'self' 同样成立。 -->
+         style 允许 inline（本页 <style> 块）；connect 放行 Vite dev HMR
+         （ws://127.0.0.1 同源端口）。live2d-app:// 自定义 scheme 下 'self' 同样成立。 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
     />
     <title>Live2D Companion</title>
     <style>
@@ -71,11 +71,6 @@
 
       .dot.connected {
         background: #44ff88;
-      }
-
-      /* Electron 壳内控制通道指示（F4 前无 WS，用中性蓝而非断连红） */
-      .dot.electron {
-        background: #64b4ff;
       }
 
       /* 语音活动指示（ADR 0001 F3）：idle 灰 / listening 黄 / speaking 绿 */
@@ -387,10 +382,6 @@
     <!-- Electron 无工具条时用于拖动 frameless 窗口 -->
     <div id="window-drag-region" aria-hidden="true"></div>
     <div id="status-bar">
-      <div class="status-indicator">
-        <div class="dot" id="ws-dot"></div>
-        <span id="ws-status">WebSocket 未连接</span>
-      </div>
       <div class="status-indicator">
         <div class="dot" id="model-dot"></div>
         <span id="model-status">模型未加载</span>

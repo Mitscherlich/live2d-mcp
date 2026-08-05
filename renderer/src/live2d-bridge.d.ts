@@ -1,6 +1,7 @@
 /**
  * Electron preload（electron/preload.cjs）暴露的窄 API 类型声明。
- * 浏览器（legacy 双进程路径）环境下不存在 window.live2d。
+ * 渲染器只在 Electron 壳内运行；未经 preload 加载时 window.live2d 不存在，
+ * 各处调用均以可选链降级（见 renderer/src/main.ts）。
  *
  * ADR 0001 · F3：voice 事件订阅（onVoiceEvent，F4 bridge 推送共用通道）
  * 与测试注入（injectVoice，仅 LIVE2D_VOICE_INJECT=1 启动时由 preload 暴露）。

@@ -23,44 +23,35 @@
  *   - 非法参数在 MCP 层被拒（renderer 计数不增）
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { once } from 'node:events'
-import fs from 'node:fs'
-import net from 'node:net'
-import os from 'node:os'
-import path from 'node:path'
-import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+import { launchElectron } from './lib/electron-harness.mjs'
+import {
+  check,
+  connectCdp,
+  connectMcpClient,
+  createEvaluate,
+  curlJson,
+  ensureCurl,
+  findRendererTarget,
+  parseToolJson,
+  proofCounts,
+  sleep,
+} from './lib/proof-harness.mjs'
+
 const require = createRequire(import.meta.url)
 const { createBridgeServer } = require('../electron/bridge-server.cjs')
+const { MCP_PATH } = require('../electron/mcp-protocol.cjs')
 const {
-  MCP_PATH,
   SERVER_INSTRUCTIONS,
   createLive2dMcpHandler,
 } = require('../electron/mcp-server.cjs')
-const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
-const {
-  StreamableHTTPClientTransport,
-} = require('@modelcontextprotocol/sdk/client/streamableHttp.js')
-const execFileP = promisify(execFile)
 
-let checks = 0
-let failures = 0
-function check(label, cond, detail = '') {
-  checks += 1
-  if (cond) {
-    console.log(`  ✔ ${label}`)
-  } else {
-    failures += 1
-    console.error(`  ✘ ${label}${detail ? ` —— ${detail}` : ''}`)
-  }
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
+/**
+ * 约定工具清单。electron/test/mcp-server.test.cjs 里有一份同样内容的独立硬编码
+ * 清单——两处刻意不共享常量：单测与证据脚本各自声明期望，任何一侧被改动都会
+ * 被另一侧发现（共享常量会让"工具集变了"这件事自证通过）。
+ */
 const EXPECTED_TOOLS = [
   'get_status',
   'control_window',
@@ -71,57 +62,6 @@ const EXPECTED_TOOLS = [
   'set_parameter',
   'reset',
 ]
-
-// ----------------------------------------------------------------- curl 封装
-/** 真实 curl 调用（--noproxy '*' 直连 loopback，避开本机代理污染） */
-async function curlJson(url, { method = 'GET', data, headers = [] } = {}) {
-  const args = ['-sS', '--noproxy', '*', '-X', method, '-w', '\n%{http_code}']
-  for (const h of headers) args.push('-H', h)
-  if (data !== undefined) args.push('-H', 'content-type: application/json', '--data', data)
-  args.push(url)
-  const { stdout } = await execFileP('curl', args, { maxBuffer: 8 * 1024 * 1024 })
-  const idx = stdout.lastIndexOf('\n')
-  const status = Number(stdout.slice(idx + 1).trim())
-  const raw = stdout.slice(0, idx)
-  let body = null
-  try {
-    body = JSON.parse(raw)
-  } catch {
-    // 非 JSON 响应
-  }
-  return { status, body, raw }
-}
-
-async function ensureCurl() {
-  try {
-    const { stdout } = await execFileP('curl', ['--version'])
-    console.log(`[proof] ${stdout.split('\n')[0]}`)
-  } catch {
-    throw new Error('curl 不可用：本脚本要求系统 curl（macOS 自带）')
-  }
-}
-
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer()
-    srv.once('error', reject)
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address()
-      srv.close(() => resolve(port))
-    })
-  })
-}
-
-function parseToolJson(result) {
-  return JSON.parse(result.content[0].text)
-}
-
-/** 官方 MCP client 连接指定 /mcp URL */
-async function connectMcpClient(url) {
-  const client = new Client({ name: 'f5-proof', version: '0.0.1' })
-  await client.connect(new StreamableHTTPClientTransport(new URL(url)))
-  return client
-}
 
 // ---------------------------------------------------------------- http 模式
 async function runHttp() {
@@ -166,7 +106,6 @@ async function runHttp() {
     port: 0,
     onEvent: () => true,
     getHealth: () => ({
-      modelReady: null,
       windowVisible: state.visible,
       voiceInject: false,
       listener: { status: 'disabled', mode: 'external' },
@@ -180,7 +119,7 @@ async function runHttp() {
   })
   const address = await bridge.listen()
   const base = `http://127.0.0.1:${address.port}`
-  const client = await connectMcpClient(`${base}${MCP_PATH}`)
+  const client = await connectMcpClient(`${base}${MCP_PATH}`, 'f5-proof')
   try {
     console.log('[proof:http] 场景 1：initialize + tools/list')
     const serverInfo = client.getServerVersion()
@@ -296,96 +235,26 @@ async function runHttp() {
 // ----------------------------------------------------------------- e2e 模式
 const CDP_PORT = 9225
 
-async function fetchJson(url, retries = 40, intervalMs = 250) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const res = await fetch(url)
-      if (res.ok) return await res.json()
-    } catch {
-      // CDP 尚未就绪
-    }
-    await sleep(intervalMs)
-  }
-  throw new Error(`CDP 不可达: ${url}`)
-}
-
-function connectCdp(wsUrl) {
-  const ws = new WebSocket(wsUrl)
-  let seq = 0
-  const pending = new Map()
-  ws.addEventListener('message', (event) => {
-    const msg = JSON.parse(String(event.data))
-    if (msg.id !== undefined && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id)
-      pending.delete(msg.id)
-      if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`))
-      else resolve(msg.result)
-    }
-  })
-  const ready = once(ws, 'open')
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const id = ++seq
-      pending.set(id, { resolve, reject })
-      ws.send(JSON.stringify({ id, method, params }))
-    })
-  return { ready, send, close: () => ws.close() }
-}
-
 async function runE2e() {
-  const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
-  if (!fs.existsSync(distIndex)) {
-    throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
-  }
-  const bridgePort = await getFreePort()
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f5-e2e-'))
-  const electronBin = path.join(ROOT, 'node_modules', '.bin', 'electron')
-  const base = `http://127.0.0.1:${bridgePort}`
+  const app = await launchElectron({
+    name: 'f5-e2e',
+    cdpPort: CDP_PORT,
+    environment: { LIVE2D_VOICE_SOURCE_MODE: 'external' },
+  })
+  const bridgePort = app.bridgePort
+  const base = app.baseUrl
   console.log(
     `[proof:e2e] 启动 Electron（prod dist，隔离 user-data-dir，LIVE2D_BRIDGE_PORT=${bridgePort}）…`,
   )
-  const child = spawn(
-    electronBin,
-    ['.', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${userDataDir}`, '--no-first-run'],
-    {
-      cwd: ROOT,
-      env: {
-        ...process.env,
-        LIVE2D_BRIDGE_PORT: String(bridgePort),
-        LIVE2D_RENDERER_LOG: '1',
-        LIVE2D_VOICE_SOURCE_MODE: 'external',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  )
-  let appLog = ''
-  child.stdout.on('data', (d) => {
-    appLog += String(d)
-  })
-  child.stderr.on('data', (d) => {
-    appLog += String(d)
-  })
 
   let cdp
   let client
   try {
-    const targets = await fetchJson(`http://127.0.0.1:${CDP_PORT}/json/list`)
-    const page = targets.find((t) => t.type === 'page' && t.url.startsWith('live2d-app://'))
-    if (!page) throw new Error(`未找到角色窗 CDP target: ${JSON.stringify(targets.map((t) => t.url))}`)
+    const page = await findRendererTarget(CDP_PORT)
     cdp = connectCdp(page.webSocketDebuggerUrl)
     await cdp.ready
     await cdp.send('Runtime.enable')
-
-    const evaluate = async (expr) => {
-      const result = await cdp.send('Runtime.evaluate', {
-        expression: expr,
-        returnByValue: true,
-      })
-      if (result.exceptionDetails) {
-        throw new Error(`页面内求值失败: ${JSON.stringify(result.exceptionDetails).slice(0, 300)}`)
-      }
-      return result.result.value
-    }
+    const evaluate = createEvaluate(cdp)
 
     // 等 renderer 命令通道挂接
     let attached = false
@@ -397,13 +266,13 @@ async function runE2e() {
     }
     check('renderer 命令通道已挂接（__live2dCommandDebug）', attached === true)
     check('主进程日志打印 MCP URL',
-      appLog.includes(`MCP Streamable HTTP 已就绪: ${base}${MCP_PATH}`),
-      appLog.slice(-500))
+      app.appLog().includes(`MCP Streamable HTTP 已就绪: ${base}${MCP_PATH}`),
+      app.appLog().slice(-500))
     check('主进程日志打印 codex mcp add 连接示例',
-      appLog.includes(`codex mcp add live2d --url ${base}${MCP_PATH}`))
+      app.appLog().includes(`codex mcp add live2d --url ${base}${MCP_PATH}`))
 
     console.log('[proof:e2e] 场景 1：MCP client 连接真 /mcp + tools/list')
-    client = await connectMcpClient(`${base}${MCP_PATH}`)
+    client = await connectMcpClient(`${base}${MCP_PATH}`, 'f5-proof')
     const { tools } = await client.listTools()
     check('tools/list 恰好含约定 8 工具',
       JSON.stringify(tools.map((t) => t.name).sort()) === JSON.stringify([...EXPECTED_TOOLS].sort()),
@@ -493,17 +362,11 @@ async function runE2e() {
       noSession.status === 400 && noSession.body?.error?.code === -32000)
   } finally {
     if (client) await client.close().catch(() => {})
-    if (cdp) cdp.close()
-    child.kill('SIGTERM')
-    const code = await Promise.race([
-      once(child, 'exit').then(([c]) => c),
-      sleep(8000).then(() => 'timeout'),
-    ])
-    if (code === 'timeout') child.kill('SIGKILL')
-    fs.rmSync(userDataDir, { recursive: true, force: true })
-    const leaked = appLog.includes('render-process-gone')
+    cdp?.close()
+    const exit = await app.close()
+    const leaked = app.appLog().includes('render-process-gone')
     check('Electron 干净退出（无 renderer 崩溃）', !leaked)
-    console.log('[proof:e2e] Electron 退出码:', code)
+    console.log('[proof:e2e] Electron 退出码:', exit === null ? 'timeout' : exit.code)
   }
 }
 
@@ -517,6 +380,7 @@ if (withE2e) {
   await runE2e()
 }
 console.log('')
+const { checks, failures } = proofCounts()
 if (failures > 0) {
   console.error(`✘ F5 证据失败：${failures}/${checks} 项断言未过`)
   process.exit(1)

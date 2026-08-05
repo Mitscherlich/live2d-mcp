@@ -21,12 +21,26 @@ const {
   normalizeCommandResult,
   normalizeCommandResultFrame,
 } = require('../renderer-commands.cjs')
+const { loadSourceProbe } = require('./helpers/source-probe.cjs')
 
-test('channel 常量与 preload 内联值一致（防漂移）', () => {
+test('channel 常量固定为 F5 线协议值', () => {
   assert.equal(COMMAND_CHANNEL, 'live2d:command')
   assert.equal(COMMAND_RESULT_CHANNEL, 'live2d:command-result')
   assert.equal(COMMAND_READY_CHANNEL, 'live2d:command-ready')
   assert.ok(COMMAND_TIMEOUT_MS > 0)
+})
+
+test('preload.cjs 内联 channel 与本模块一致（防漂移：真读 preload 源文本）', () => {
+  const preload = loadSourceProbe('preload.cjs')
+  assert.equal(preload.stringConst('COMMAND_CHANNEL'), COMMAND_CHANNEL)
+  assert.equal(preload.stringConst('COMMAND_RESULT_CHANNEL'), COMMAND_RESULT_CHANNEL)
+  assert.equal(preload.stringConst('COMMAND_READY_CHANNEL'), COMMAND_READY_CHANNEL)
+})
+
+test('preload.cjs 内联 COMMAND_TYPES 白名单与本模块一致（防漂移）', () => {
+  // 漂移后果：preload 浅校验静默丢弃命令帧，MCP 工具只会看到 2s 超时，极难定位。
+  const preload = loadSourceProbe('preload.cjs')
+  assert.deepEqual(preload.setMembers('COMMAND_TYPES'), [...COMMAND_TYPES].sort())
 })
 
 test('type 白名单：恰好为 SPEC §6.4 视觉命令面', () => {

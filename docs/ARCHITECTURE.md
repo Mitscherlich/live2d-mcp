@@ -7,7 +7,7 @@
 | 实现计划 | [`.adr/0001-electron-live2d-companion/plan.md`](../.adr/0001-electron-live2d-companion/plan.md)（切片 F1–F7） |
 | 参考实现（只读） | `/Users/mitscherlich/f/persona`（MIT；分层与契约借鉴，**禁止修改**，不引入其 VRM/Three 渲染栈） |
 
-> 本文描述当前已落地架构：F1–F7 的 TTS 清除、Electron 壳、voice 口型、loopback bridge、Streamable HTTP MCP、macOS process-audio listener、系统托盘与最小设置均已实现。旧独立 `mcp-server` + 浏览器流程仅作 Legacy 降级入口。
+> 本文描述当前已落地架构：F1–F7 的 TTS 清除、Electron 壳、voice 口型、loopback bridge、Streamable HTTP MCP、macOS process-audio listener、系统托盘与最小设置均已实现。旧独立 `mcp-server` + 浏览器双进程流程已整体删除。
 
 ---
 
@@ -29,7 +29,7 @@ Electron main (:47832 loopback)
 - 包管理与脚本入口为 **Bun**（`packageManager: bun@…`，锁文件 `bun.lock`）。安装用 `bun install`，任务用 `bun run …`。测试请用 `bun run test`（`node:test` 套件）；勿用裸 `bun test`（会进 Bun 内置测试器）。Electron 与 `node --check` / `node --test` 仍走 Node 兼容运行时。
 - `bun run dev` / `bun start` 均进入 Electron；托盘关闭角色窗时保活 bridge 与 renderer。
 - 设置窗展示实际 MCP URL，并将 voice source 原子写入 `userData/settings.json`；无环境覆盖时热更新 listener。
-- 旧双进程形态只由 `bun run dev:legacy` 暂留，不作为长期主路径维护。
+- 旧双进程形态（独立 `mcp-server` + 浏览器 renderer）已删除，Electron 一体化是唯一路径。
 
 ### 1.2 当前架构（Electron 一体化）
 
@@ -89,17 +89,17 @@ Electron main (:47832 loopback)
 
 | 接口 | 方法 | 状态 | 说明 |
 |------|------|------|------|
-| `/health` | GET | **F4/F6 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 起为真实 source/status，见 §4.1）/ `mcp`（F5 起 `implemented:true` + 实际 `url`）；`modelReady` 恒 `null`（`/health` 不做 renderer 往返；模型真实状态用 MCP `get_status`，见 §5）。**不含用户内容** |
+| `/health` | GET | **F4/F6 已落地** | 200 JSON：`ok` / `bridgePort` / `voice` 摘要（phase、activity、lastLevel、接受/拒绝计数）/ `windowVisible` / `voiceInject` / `listener`（F6 起为真实 source/status，见 §4.1）/ `mcp`（F5 起 `implemented:true` + 实际 `url`）。`/health` 不做 renderer 往返，因此不报告模型就绪状态；模型真实状态用 MCP `get_status`（见 §5）。**不含用户内容** |
 | `/events` | POST | **F4 已落地** | JSON：`state`（SPEC §8.1）/ `audio-level`（§8.2，level clamp `[0,1]`）。body 上限 64KB；过 `electron/voice-events.cjs` 权威规范化（与 F3 注入同一份校验）后调 `sendVoiceEvent` 推送到 renderer。202 `{"accepted":true}`；非法 JSON 400 / 非法事件 422 / 超限 413 |
-| `/mcp` | POST/GET/DELETE | **F5 已落地** | Streamable HTTP MCP（`electron/mcp-server.cjs`，`@modelcontextprotocol/sdk`，server 名 `live2d-companion`）。工具面见 §5。每 `initialize` 一个 session（`mcp-session-id` 头，`enableJsonResponse`）；无 session 的非 initialize POST → 400 `-32000`；body 复用 64KB 上限，坏 JSON → 400 `-32700`；其他方法 → 405；未注入 handler → 404 占位 |
+| `/mcp` | POST/GET/DELETE | **F5 已落地** | Streamable HTTP MCP（`electron/mcp-server.cjs`，`@modelcontextprotocol/sdk`，server 名 `live2d-companion`）。工具面见 §5。每 `initialize` 一个 session（`mcp-session-id` 头，`enableJsonResponse`）；无 session 的非 initialize POST → 400 `-32000`；body 复用 64KB 上限，坏 JSON → 400 `-32700`；其他方法 → 405。`mcpHandler` 是 `createBridgeServer` 的必填参数（缺失即构造期抛错，无运行时占位分支）。session 生命周期：每次请求刷新 `lastSeenAt`，新建 session 时清扫空闲超过 30 分钟者并在总数达 32 时驱逐最久未活动者 —— `enableJsonResponse` 没有 SSE 长连可感知断线，客户端被 SIGKILL 时不会发 DELETE，只能靠空闲超时兜底 |
 
-实现：`electron/bridge-server.cjs`（纯 `node:http`，无 Electron 依赖，`node:test` 直测）+ `electron/mcp-server.cjs`（MCP 协议与工具面，controller 由 main 注入）；main 在 `app.whenReady` 后 `listen`、`will-quit` 时 `close`（`electron/main.cjs` `startBridge()`）。监听失败（如端口占用）不杀应用，打印清晰日志提示用 `LIVE2D_BRIDGE_PORT` 换端口。
+实现：`electron/bridge-server.cjs`（纯 `node:http`，无 Electron 依赖、也不加载 MCP SDK，`node:test` 直测）+ `electron/mcp-server.cjs`（MCP 协议与工具面，controller 由 main 注入）+ `electron/mcp-protocol.cjs`（零第三方依赖的协议常量层：`MCP_PATH`、`sendJsonRpcError`、JSON-RPC 错误码 `-32700`/`-32603`/`-32000`）。`MCP_PATH` 与 `sendJsonRpcError` 以 `mcp-protocol.cjs` 为**唯一出口**，`mcp-server.cjs` 只消费不转出；HTTP 层与设置视图层（`settings-view.cjs` 仅为拼 MCP URL 需要 `MCP_PATH`）因此都不必把 `@modelcontextprotocol/sdk` + `zod` 拉进模块图。main 在 `app.whenReady` 后 `listen`、`will-quit` 时 `close`（`electron/main.cjs` `startBridge()`）。监听失败（如端口占用）不杀应用，打印清晰日志提示用 `LIVE2D_BRIDGE_PORT` 换端口。
 
 curl 示例（应用运行中）：
 
 ```bash
 curl -s http://127.0.0.1:47832/health
-# → {"ok":true,"bridgePort":47832,"voice":{...},"modelReady":null,"windowVisible":true,...}
+# → {"ok":true,"bridgePort":47832,"voice":{...},"windowVisible":true,...}
 
 curl -s -X POST http://127.0.0.1:47832/events \
   -H 'content-type: application/json' \
@@ -130,13 +130,18 @@ MCP 端到端证据：`bun run proof:f5`（默认 HTTP 层：官方 SDK client �
 ### 4.1 Listener 契约（所有 voice source 统一）
 
 - `onSession(active: boolean)`
-- `onActivity("listening" | "speaking")`
 - `onLevel(level: number)`，`0 ≤ level ≤ 1`
 - `onStatus(diagnostics)`
 
+listener 不产出 activity：`listening ⇄ speaking` 由 renderer 的 `VoiceStateMachine` 从同一条 level 流推导（阈值 0.018、静音保持 900ms）。`state.activity` 仍是 `/events` 的合法注入字段（外部编排方可显式驱动），由 `voice-events.cjs` 规范化后进入同一条链路。
+
+静音期的连续 0 由 listener 抑制：非零 level 逐条转发，静音后的第一条 0 必须送达（renderer 靠它起算 900ms 静音保持），此后连续 0 全部丢弃直到再次出现非零 —— helper 以 30Hz 无条件推 level，否则整条链路都在搬运 0。
+
+进程发现按捕获状态分档：未捕获时每 1.5s 一次 `ps` 快照；已捕获后降到 12s 一次（捕获期的发现结果本就被捕获 key 早退丢弃，helper 退出/错误是事件驱动上报的）。`application` 模式只跑 `ps -axo pid=,ppid=,comm=` 一次（该模式按 executable identity 精确匹配，不读命令行）；`automatic`/`custom` 额外取 `pid=,args=`，因为 CLI 启动的 codex 其 comm 只是 `node`。
+
 voice source 四模式：`automatic`（默认匹配 codex/chatgpt 类进程名，regex 可配置）/ `application` / `custom`（自定义 regex）/ `external`（关闭进程捕获，仅消费 `/events`）。
 
-F6 实现链路：`electron/main.cjs` 启动时用 `resolveVoiceSourceConfig` 解析配置，通过 `createAudioListener` 决定是否创建 `NativeProcessAudioListener`；native 的 `onSession` / `onActivity` / `onLevel` 全部转换成 `state` / `audio-level` 并进入同一个 `sendVoiceEvent`，与 `/events` 不存在旁路。应用 `will-quit` 时先 `stop()` listener。`/health.listener` 与 MCP `get_status.listener` 都由 `buildListenerSummary` 从最近 native 状态构造。
+F6 实现链路：`electron/main.cjs` 启动时用 `resolveVoiceSourceConfig` 解析配置，通过 `createAudioListener` 决定是否创建 `NativeProcessAudioListener`；native 的 `onSession` / `onLevel` 全部转换成 `state` / `audio-level` 并进入同一个 `sendVoiceEvent`，与 `/events` 不存在旁路。应用 `will-quit` 时先 `stop()` listener。`/health.listener` 与 MCP `get_status.listener` 都由 `buildListenerSummary` 从最近 native 状态构造。
 
 | mode | 目标选择 | native 行为 |
 |------|----------|-------------|
@@ -182,9 +187,10 @@ macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio
 
 | 环节 | 位置 | 说明 |
 |------|------|------|
-| 帧协议常量/校验 | `electron/renderer-commands.cjs` | type 白名单（`getModelInfo` / `setExpression` / `playMotion` / `lookAt` / `setParameter` / `reset`）、命令帧形状校验、结果帧规范化（纯函数，有单测） |
-| main → renderer | IPC `live2d:command` | `sendRendererCommand(type, params)`（`electron/main.cjs`）：携带 `requestId`，等待结果帧（超时 2s，窗口销毁立即失败）；所有失败 resolve 为 `{ ok:false, error }`，MCP 工具层转 isError |
-| renderer → main | IPC `live2d:command-result` / `live2d:command-ready` | preload 注册 `onCommand` 即发 ready 帧；结果帧过 `normalizeCommandResultFrame` 防御性校验后按 `requestId` 配对 |
+| 帧协议常量/校验 | `electron/renderer-commands.cjs` | type 白名单（`getModelInfo` / `setExpression` / `playMotion` / `lookAt` / `setParameter` / `reset`）、命令帧形状校验、结果帧规范化（纯函数，无状态，有单测） |
+| 请求-响应关联器 | `electron/renderer-command-channel.cjs` | `createRendererCommandChannel({ ipcMain, getWindow, timeoutMs })` → `{ send, isReady, handleWindowClosed, dispose }`。持有 `requestId` 生成、挂起表、超时兜底、结果帧配对、ready 标志、窗口销毁冲销、IPC sender 校验（只认当前角色窗的 `webContents`）。Electron 只经 `ipcMain` 与 `getWindow` 两个注入点进来，故 fake 双件即可单测全部路径 |
+| main → renderer | IPC `live2d:command` | `sendRendererCommand(type, params)`（`electron/main.cjs`）转调上面的 `send`：携带 `requestId`，等待结果帧（超时 2s，窗口销毁立即失败）；所有失败 resolve 为 `{ ok:false, error }`，MCP 工具层转 isError |
+| renderer → main | IPC `live2d:command-result` / `live2d:command-ready` | preload 注册 `onCommand` 即发 ready 帧；结果帧过 `normalizeCommandResultFrame` 防御性校验后按 `requestId` 配对（两个监听随通道创建自注册，`dispose()` 摘除） |
 | preload 窄 API | `electron/preload.cjs` | `window.live2d.onCommand(handler)`（帧形状浅校验 + handler 异常兜底；sandbox 限制下内联常量，与 renderer-commands.cjs 同步） |
 | renderer 执行 | `renderer/src/main.ts` `initCommandChannel` | 映射到 `Live2DApp`（表情/动作/视线/参数/重置/模型信息）；**无模型时 `{ ok:false, error }` 清晰降级不崩溃**；调试快照 `window.__live2dCommandDebug.snapshot()`（counts / lastCommand / modelLoaded）供 proof 断言 |
 
@@ -193,6 +199,7 @@ MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路�
 ### 4.5 托盘与设置生命周期（F7 落地）
 
 - `electron/tray.cjs` 用内置 PNG 创建托盘（macOS 使用 template image），菜单动作固定为显示角色窗、隐藏角色窗、打开设置、退出；不依赖 persona 或模型资源。
+- 「把角色窗露出来」只有一处实现：`electron/main.cjs` 的 `showAvatarWindow()`（必要时建窗 → 最小化则 `restore()` → `show()` → `focus()`）。托盘显示/托盘点击、macOS dock `activate`、第二实例唤起、MCP `control_window show|toggle` 全部走它；`windowAction()` 退化为 MCP 适配层，只负责把 show/hide/toggle 翻译成显示或隐藏并返回操作后的可见性。
 - 有可用托盘时，角色窗 `close` 转为 `hide`，`window-all-closed` 不退出；托盘“退出”设置 quitting 状态后走 Electron 正常退出清理 bridge、MCP handler 与 listener。
 - `electron/settings-store.cjs` 将 `{ version, voiceSource }` 保存到 Electron `userData/settings.json`。候选值先经过 `sanitizeVoiceSource`，再以同目录临时文件 + rename 原子发布；非法输入不会破坏上一份配置。
 - `settings.html` 通过独立 sandbox preload 暴露的窄 IPC 读取/保存设置、复制 Codex 命令；renderer 无文件系统、clipboard 或任意 IPC 权限。
@@ -236,7 +243,6 @@ live2d-mcp/
 │   ├── audio-listener.*
 │   ├── native-process-audio-listener.*
 │   ├── process-discovery.*
-│   ├── audio-activity-gate.*
 │   ├── listener-status.*
 │   ├── voice-source.*
 │   ├── settings-store.*
@@ -246,7 +252,6 @@ live2d-mcp/
 ├── native/
 │   ├── macos/Live2dAudioListener.mm
 │   └── bin/darwin/live2d-audio-listener
-└── (legacy mcp-server/)         # 已降级，仅 dev:legacy 暂留
 ```
 
 ---

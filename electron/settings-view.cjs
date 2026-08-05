@@ -7,7 +7,7 @@ const {
   LOOPBACK_HOST,
   resolveBridgePort,
 } = require('./bridge-server.cjs')
-const { MCP_PATH } = require('./mcp-server.cjs')
+const { MCP_PATH } = require('./mcp-protocol.cjs')
 
 function configuredBridgePort(environment = process.env) {
   return resolveBridgePort(environment?.LIVE2D_BRIDGE_PORT) ?? DEFAULT_PORT

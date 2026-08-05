@@ -1,16 +1,17 @@
 /**
- * Electron 工具条启动引导（同步、尽早执行，减少顶/底栏闪一下）。
+ * 工具条启动引导（同步、尽早执行，减少顶/底栏闪一下）。
  * CSP 禁止 inline script，故放 public/ 由 index.html 引用。
  *
- * 策略与 renderer/src/main.ts shouldShowUiChrome 对齐：
- *  - 非 Electron：不处理，工具条默认可见
- *  - Electron：立刻加 electron-mode（CSS 隐藏工具条）
- *  - 仅当 uiChrome / ?debug=1 / ?ui=1 / #debug / localStorage 时再加 ui-chrome
+ * **ui-chrome 的唯一判定点**：此处写到 documentElement 的 class 即最终结论，
+ * renderer/src/main.ts 只读取该结果并同步到 body，不再重复判定。
+ * 判定条件：
+ *  - preload uiChrome（LIVE2D_UI_CHROME / LIVE2D_DEVTOOLS / --live2d-ui-chrome）
+ *  - ?debug=1 / ?ui=1 / #debug
+ *  - localStorage live2d.uiChrome=1
+ * 另：渲染器只在 Electron 壳内运行（main.ts 无条件加 electron-mode），
+ * 故此处也无条件加，浏览器直开调试页时行为一致。
  */
 ;(function () {
-  var isElectron = typeof window.live2d !== 'undefined'
-  if (!isElectron) return
-
   function wantChrome() {
     try {
       if (window.live2d && window.live2d.uiChrome === true) return true
@@ -26,10 +27,12 @@
     return false
   }
 
+  var showChrome = wantChrome()
+
   function apply(el) {
     if (!el) return
     el.classList.add('electron-mode')
-    if (wantChrome()) el.classList.add('ui-chrome')
+    if (showChrome) el.classList.add('ui-chrome')
   }
 
   // 尽早作用到 html，CSS 同时支持 html/body

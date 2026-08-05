@@ -21,75 +21,23 @@
  * （与 F3 e2e 同一证据口径）。
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { once } from 'node:events'
-import fs from 'node:fs'
-import net from 'node:net'
-import os from 'node:os'
-import path from 'node:path'
-import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+import { launchElectron } from './lib/electron-harness.mjs'
+import {
+  check,
+  connectCdp,
+  createEvaluate,
+  curlJson,
+  ensureCurl,
+  findRendererTarget,
+  proofCounts,
+  sleep,
+} from './lib/proof-harness.mjs'
+
 const require = createRequire(import.meta.url)
 const { createBridgeServer } = require('../electron/bridge-server.cjs')
 const { normalizeVoiceEvent } = require('../electron/voice-events.cjs')
-const execFileP = promisify(execFile)
-
-let failures = 0
-function check(label, cond, detail = '') {
-  if (cond) {
-    console.log(`  ✔ ${label}`)
-  } else {
-    failures += 1
-    console.error(`  ✘ ${label}${detail ? ` —— ${detail}` : ''}`)
-  }
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-// ----------------------------------------------------------------- curl 封装
-/** 真实 curl 调用；返回 { status, body, raw }（body 解析失败为 null）。
- *  --noproxy '*' 强制直连 loopback：本机若设 http_proxy，自定义 Host 的用例
- *  会被代理按 Host 路由而到不了 bridge。 */
-async function curlJson(url, { method = 'GET', data, headers = [] } = {}) {
-  const args = ['-sS', '--noproxy', '*', '-X', method, '-w', '\n%{http_code}']
-  for (const h of headers) args.push('-H', h)
-  if (data !== undefined) args.push('-H', 'content-type: application/json', '--data', data)
-  args.push(url)
-  const { stdout } = await execFileP('curl', args, { maxBuffer: 8 * 1024 * 1024 })
-  const idx = stdout.lastIndexOf('\n')
-  const status = Number(stdout.slice(idx + 1).trim())
-  const raw = stdout.slice(0, idx)
-  let body = null
-  try {
-    body = JSON.parse(raw)
-  } catch {
-    // 非 JSON 响应（如 204 空体）
-  }
-  return { status, body, raw }
-}
-
-async function ensureCurl() {
-  try {
-    const { stdout } = await execFileP('curl', ['--version'])
-    console.log(`[proof] ${stdout.split('\n')[0]}`)
-  } catch {
-    throw new Error('curl 不可用：本脚本要求系统 curl（macOS 自带）')
-  }
-}
-
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer()
-    srv.once('error', reject)
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address()
-      srv.close(() => resolve(port))
-    })
-  })
-}
 
 // ---------------------------------------------------------------- http 模式
 async function runHttp() {
@@ -102,11 +50,15 @@ async function runHttp() {
       return true
     },
     getHealth: () => ({
-      modelReady: null,
       windowVisible: true,
       listener: { status: 'disabled', mode: 'external' },
-      mcp: { path: '/mcp', implemented: false },
+      mcp: { path: '/mcp', implemented: true },
     }),
+    // 本片只证 /health 与 /events；MCP 协议面由 proof:f5 覆盖，这里给最小 handler
+    mcpHandler: async (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end('{}')
+    },
   })
   const address = await bridge.listen()
   const base = `http://127.0.0.1:${address.port}`
@@ -120,7 +72,7 @@ async function runHttp() {
     check('/health 含窗口/listener/mcp 摘要（尽力而为，不含用户内容）',
       health0.body?.windowVisible === true &&
         health0.body?.listener?.mode === 'external' &&
-        health0.body?.mcp?.implemented === false)
+        health0.body?.mcp?.implemented === true)
 
     console.log('[proof:http] 场景 2：POST /events 合法事件 → onEvent 与 normalizeVoiceEvent 同源')
     const stateRaw = {
@@ -178,11 +130,19 @@ async function runHttp() {
     })
     check('非受信 Origin → 403', evilOrigin.status === 403, `status=${evilOrigin.status}`)
 
-    console.log('[proof:http] 场景 5：/mcp 未注入 mcpHandler 时保持 404 占位（F5 前行为）')
+    console.log('[proof:http] 场景 5：/mcp 委托注入的 mcpHandler（mcpHandler 为必填参数）')
     const mcp = await curlJson(`${base}/mcp`, { method: 'POST', data: '{}' })
-    check('/mcp（无 handler）→ 404 占位',
-      mcp.status === 404 && mcp.body?.error === 'mcp not implemented (F5)',
-      `status=${mcp.status} body=${mcp.raw}`)
+    check('/mcp → 委托 handler 返回 200', mcp.status === 200, `status=${mcp.status} body=${mcp.raw}`)
+
+    let constructError = null
+    try {
+      createBridgeServer({ port: 0, onEvent: () => true })
+    } catch (error) {
+      constructError = error
+    }
+    check('缺 mcpHandler → 构造期 TypeError（无运行时 404 占位分支）',
+      constructError instanceof TypeError && /mcpHandler/.test(constructError.message),
+      String(constructError?.message ?? constructError))
   } finally {
     await bridge.close()
   }
@@ -191,96 +151,26 @@ async function runHttp() {
 // ----------------------------------------------------------------- e2e 模式
 const CDP_PORT = 9224
 
-async function fetchJson(url, retries = 40, intervalMs = 250) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const res = await fetch(url)
-      if (res.ok) return await res.json()
-    } catch {
-      // CDP 尚未就绪
-    }
-    await sleep(intervalMs)
-  }
-  throw new Error(`CDP 不可达: ${url}`)
-}
-
-function connectCdp(wsUrl) {
-  const ws = new WebSocket(wsUrl)
-  let seq = 0
-  const pending = new Map()
-  ws.addEventListener('message', (event) => {
-    const msg = JSON.parse(String(event.data))
-    if (msg.id !== undefined && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id)
-      pending.delete(msg.id)
-      if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`))
-      else resolve(msg.result)
-    }
-  })
-  const ready = once(ws, 'open')
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const id = ++seq
-      pending.set(id, { resolve, reject })
-      ws.send(JSON.stringify({ id, method, params }))
-    })
-  return { ready, send, close: () => ws.close() }
-}
-
 async function runE2e() {
-  const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
-  if (!fs.existsSync(distIndex)) {
-    throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
-  }
-  const bridgePort = await getFreePort()
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f4-e2e-'))
-  const electronBin = path.join(ROOT, 'node_modules', '.bin', 'electron')
-  const base = `http://127.0.0.1:${bridgePort}`
+  // 生产配置：不开 LIVE2D_VOICE_INJECT——证明 bridge 路径不依赖测试注入面
+  const app = await launchElectron({
+    name: 'f4-e2e',
+    cdpPort: CDP_PORT,
+    environment: { LIVE2D_VOICE_SOURCE_MODE: 'external' },
+  })
+  const bridgePort = app.bridgePort
+  const base = app.baseUrl
   console.log(
     `[proof:e2e] 启动 Electron（prod dist，隔离 user-data-dir，LIVE2D_BRIDGE_PORT=${bridgePort}，不开注入）…`,
   )
-  const child = spawn(
-    electronBin,
-    ['.', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${userDataDir}`, '--no-first-run'],
-    {
-      cwd: ROOT,
-      // 生产配置：不开 LIVE2D_VOICE_INJECT——证明 bridge 路径不依赖测试注入面
-      env: {
-        ...process.env,
-        LIVE2D_BRIDGE_PORT: String(bridgePort),
-        LIVE2D_RENDERER_LOG: '1',
-        LIVE2D_VOICE_SOURCE_MODE: 'external',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  )
-  let appLog = ''
-  child.stdout.on('data', (d) => {
-    appLog += String(d)
-  })
-  child.stderr.on('data', (d) => {
-    appLog += String(d)
-  })
 
   let cdp
   try {
-    const targets = await fetchJson(`http://127.0.0.1:${CDP_PORT}/json/list`)
-    const page = targets.find((t) => t.type === 'page' && t.url.startsWith('live2d-app://'))
-    if (!page) throw new Error(`未找到角色窗 CDP target: ${JSON.stringify(targets.map((t) => t.url))}`)
+    const page = await findRendererTarget(CDP_PORT)
     cdp = connectCdp(page.webSocketDebuggerUrl)
     await cdp.ready
     await cdp.send('Runtime.enable')
-
-    const evaluate = async (expr) => {
-      const result = await cdp.send('Runtime.evaluate', {
-        expression: expr,
-        returnByValue: true,
-      })
-      if (result.exceptionDetails) {
-        throw new Error(`页面内求值失败: ${JSON.stringify(result.exceptionDetails).slice(0, 300)}`)
-      }
-      return result.result.value
-    }
+    const evaluate = createEvaluate(cdp)
 
     // 等 renderer 口型挂接完成（快照调试钩子在 Electron 模式无条件存在）
     let ready = false
@@ -290,9 +180,9 @@ async function runE2e() {
     }
     check('页面内口型调试快照可用', ready === true)
     check('主进程日志确认 bridge 监听（仅 loopback）',
-      appLog.includes(`bridge 已监听（仅 loopback）: http://127.0.0.1:${bridgePort}/health`),
-      appLog.slice(-400))
-    check('未开启测试注入面（生产配置）', !appLog.includes('voice 测试注入已开启'))
+      app.appLog().includes(`bridge 已监听（仅 loopback）: http://127.0.0.1:${bridgePort}/health`),
+      app.appLog().slice(-400))
+    check('未开启测试注入面（生产配置）', !app.appLog().includes('voice 测试注入已开启'))
 
     console.log('[proof:e2e] 场景 1：curl /health')
     let health = null
@@ -306,7 +196,6 @@ async function runE2e() {
     check('/health ok:true 且 bridgePort 正确',
       health.body?.ok === true && health.body?.bridgePort === bridgePort)
     check('/health windowVisible:true（窗口已显示）', health.body?.windowVisible === true)
-    check('/health modelReady 明确为 null（main 侧 unknown）', health.body?.modelReady === null)
     check('/health 声明 external listener disabled（F6）且 mcp 已实现（F5）',
       health.body?.listener?.status === 'disabled' &&
         health.body?.listener?.mode === 'external' &&
@@ -391,17 +280,11 @@ async function runE2e() {
         healthFinal.body?.voice?.eventsRejected === 1,
       healthFinal.raw)
   } finally {
-    if (cdp) cdp.close()
-    child.kill('SIGTERM')
-    const code = await Promise.race([
-      once(child, 'exit').then(([c]) => c),
-      sleep(8000).then(() => 'timeout'),
-    ])
-    if (code === 'timeout') child.kill('SIGKILL')
-    fs.rmSync(userDataDir, { recursive: true, force: true })
-    const leaked = appLog.includes('render-process-gone')
+    cdp?.close()
+    const exit = await app.close()
+    const leaked = app.appLog().includes('render-process-gone')
     check('Electron 干净退出（无 renderer 崩溃）', !leaked)
-    console.log('[proof:e2e] Electron 退出码:', code)
+    console.log('[proof:e2e] Electron 退出码:', exit === null ? 'timeout' : exit.code)
   }
 }
 
@@ -415,9 +298,10 @@ if (withE2e) {
   await runE2e()
 }
 console.log('')
+const { checks, failures } = proofCounts()
 if (failures > 0) {
-  console.error(`✘ F4 证据失败：${failures} 项断言未过`)
+  console.error(`✘ F4 证据失败：${failures}/${checks} 项断言未过`)
   process.exit(1)
 }
-console.log('✔ F4 证据通过：curl /health 可用，/events 经 bridge → onEvent 与权威规范化同源' +
+console.log(`✔ F4 证据通过（${checks} 项断言）：curl /health 可用，/events 经 bridge → onEvent 与权威规范化同源` +
   (withE2e ? '，且 CDP 端到端实证口型被驱动' : '（--e2e 可追加 GUI 端到端口型证据）'))

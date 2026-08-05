@@ -60,11 +60,15 @@ test('parseMacCommandList：pid → 完整命令行', () => {
 test('identityMatches：默认 pattern 命中 comm 或 args，miss 无关进程', () => {
   const chatgpt = { name: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT', executable: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT', command: '' }
   assert.equal(identityMatches(chatgpt, DEFAULT_VOICE_APP_PATTERN), true)
-  const firefox = { name: 'firefox', executable: '/Applications/Firefox.app/Contents/MacOS/firefox', command: '-foreground' }
+  const firefox = { name: '/Applications/Firefox.app/Contents/MacOS/firefox', executable: '/Applications/Firefox.app/Contents/MacOS/firefox', command: '-foreground' }
   assert.equal(identityMatches(firefox, DEFAULT_VOICE_APP_PATTERN), false)
-  // 自定义 pattern 可命中命令行参数（如 afplay 播放声音的路径）
-  const afplay = { name: '/usr/sbin/afplay', executable: '/usr/sbin/afplay', command: '/usr/sbin/afplay Glass.aiff' }
-  assert.equal(identityMatches(afplay, /afplay/i), true)
+  // 自定义 pattern 可命中命令行参数（如 CLI 启动的 codex，comm 只是 node）
+  const cli = { name: '/usr/local/bin/node', executable: '/usr/local/bin/node', command: 'node /opt/codex/bin/codex' }
+  assert.equal(identityMatches(cli, DEFAULT_VOICE_APP_PATTERN), true)
+  // 匹配文本只拼 name + command：executable 与 name 同源（parseMacProcessList 同一捕获组），
+  // 拼进去只是让每个进程多匹配一遍相同文本
+  const commandOnly = { name: 'node', command: 'node --flag' }
+  assert.equal(identityMatches(commandOnly, /--flag/i), true)
 })
 
 test('selectVoiceProcessTree：直配 + 后代纳入，根为父未匹配的直配进程', () => {
@@ -122,6 +126,18 @@ test('listPlatformProcesses：非 darwin 返回空（linux/win 预留）；darwi
   assert.match(list.find((p) => p.pid === 200).command, /Glass\.aiff/)
 })
 
+test('listPlatformProcesses：includeArgs:false 只跑 comm 那一次 ps（application 模式）', async () => {
+  const invocations = []
+  const run = async (_cmd, args) => {
+    invocations.push(args[1])
+    return args[1].startsWith('pid=,ppid=') ? { stdout: PS_COMM } : { stdout: PS_ARGS }
+  }
+  const list = await listPlatformProcesses({ platform: 'darwin', run, includeArgs: false })
+  assert.deepEqual(invocations, ['pid=,ppid=,comm='], '不得执行 args 那一次 ps')
+  assert.equal(list.length, 6)
+  assert.equal(list.find((p) => p.pid === 200).command, '', 'command 留空（该模式无人消费）')
+})
+
 test('discoverVoiceProcesses：voice source → sourceId/pattern 分派', async () => {
   const run = async (_cmd, args) =>
     args[1].startsWith('pid=,ppid=') ? { stdout: PS_COMM } : { stdout: PS_ARGS }
@@ -142,4 +158,33 @@ test('discoverVoiceProcesses：voice source → sourceId/pattern 分派', async 
     voiceSource: { mode: 'application', source_id: id, source_name: 'afplay' },
   })
   assert.deepEqual(app.pids, [200])
+})
+
+test('discoverVoiceProcesses：application 模式跳过 args 那次 ps；automatic 仍需要', async () => {
+  const runWith = (invocations) => async (_cmd, args) => {
+    invocations.push(args[1])
+    return args[1].startsWith('pid=,ppid=') ? { stdout: PS_COMM } : { stdout: PS_ARGS }
+  }
+  const appCalls = []
+  await discoverVoiceProcesses({
+    platform: 'darwin',
+    run: runWith(appCalls),
+    ownProcessId: 999,
+    voiceSource: {
+      mode: 'application',
+      source_id: `process:darwin:${encodeIdentity('/usr/sbin/afplay')}`,
+      source_name: 'afplay',
+    },
+  })
+  assert.deepEqual(appCalls, ['pid=,ppid=,comm='])
+
+  const autoCalls = []
+  await discoverVoiceProcesses({
+    platform: 'darwin',
+    run: runWith(autoCalls),
+    ownProcessId: 999,
+    pattern: DEFAULT_VOICE_APP_PATTERN,
+    voiceSource: { mode: 'automatic' },
+  })
+  assert.equal(autoCalls.length, 2, 'automatic 需要 args（CLI 启动的 codex，comm 只是 node）')
 })

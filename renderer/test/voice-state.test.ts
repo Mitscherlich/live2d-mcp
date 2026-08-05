@@ -8,6 +8,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 
 import {
   VoiceStateMachine,
@@ -19,6 +20,17 @@ import {
 } from '../src/voice-state.ts'
 
 const HOLD = VOICE_DEFAULTS.silenceHoldMs // 900
+
+const requireCjs = createRequire(import.meta.url)
+
+test('跨侧一致性：native listener 的会话可闻阈值 === VOICE_DEFAULTS.audibleFloor', () => {
+  // main 侧 SESSION_AUDIBLE_LEVEL 决定「这段声音算不算一次会话」，renderer 侧
+  // audibleFloor 决定「这段声音要不要张嘴」。两者是同一条 level 流上的同一个判定，
+  // 一旦漂移，会出现「会话已开但嘴不动」或反之的错位。native listener 为纯 Node
+  // 模块（import 期只 require fs/path/child_process 与纯模块，无副作用），可直接 require。
+  const { SESSION_AUDIBLE_LEVEL } = requireCjs('../../electron/native-process-audio-listener.cjs')
+  assert.equal(SESSION_AUDIBLE_LEVEL, VOICE_DEFAULTS.audibleFloor)
+})
 
 test('clamp01：钳制到 [0,1]，非有限数归 0', () => {
   assert.equal(clamp01(0.5), 0.5)

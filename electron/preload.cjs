@@ -15,8 +15,11 @@
  *
  * 安全边界（NFR-2）：不暴露 Node/fs/任意 IPC；voice/命令负载在此做浅校验
  * （白名单 + 形状），权威校验分别在 main（voice-events.cjs）与 MCP 层（zod）。
- * 注意：sandbox preload 不能 require 本仓模块，channel 常量与
- * electron/renderer-commands.cjs 内联同步（改动需双侧同步）。
+ * 注意：sandbox preload 不能 require 本仓模块（只拿得到 electron/events/timers/url），
+ * 下面的 channel 常量与命令/事件白名单是 electron/renderer-commands.cjs 与
+ * electron/voice-events.cjs 的内联副本。这两份副本有护栏：
+ * electron/test/renderer-commands.test.cjs 与 electron/test/voice-events.test.cjs
+ * 会读本文件源文本比对，任何单侧改动都会被测试捕获（改动请双侧同步）。
  */
 
 const { contextBridge, ipcRenderer } = require('electron')
@@ -25,6 +28,7 @@ const VOICE_EVENT_CHANNEL = 'live2d:voice'
 const VOICE_INJECT_CHANNEL = 'live2d:voice-inject'
 const VOICE_INJECT_ARG = '--live2d-voice-inject'
 // 与 electron/renderer-commands.cjs 保持一致（sandbox 限制无法 require）
+// 护栏：electron/test/renderer-commands.test.cjs 读本文件源文本比对，改动会被测试捕获
 const COMMAND_CHANNEL = 'live2d:command'
 const COMMAND_RESULT_CHANNEL = 'live2d:command-result'
 const COMMAND_READY_CHANNEL = 'live2d:command-ready'
@@ -37,6 +41,8 @@ const COMMAND_TYPES = new Set([
   'reset',
 ])
 
+// 与 electron/voice-events.cjs 的 normalizeVoiceEvent 接受面一致（sandbox 限制无法 require）
+// 护栏：electron/test/voice-events.test.cjs 读本文件源文本比对，改动会被测试捕获
 const VALID_EVENT_TYPES = new Set(['state', 'audio-level'])
 const injectEnabled = process.argv.includes(VOICE_INJECT_ARG)
 // 调试工具条：main 以 LIVE2D_UI_CHROME / LIVE2D_DEVTOOLS / --live2d-ui-chrome 启动时透传

@@ -27,7 +27,9 @@
 const VOICE_SOURCE_MODES = Object.freeze(['automatic', 'application', 'custom', 'external'])
 const VOICE_SOURCE_MODE_SET = new Set(VOICE_SOURCE_MODES)
 
-/** application 模式 source id：process:darwin:<base64url(executable 标识)>（win32 预留） */
+/** application 模式 source id：process:darwin:<base64url(executable 标识)> */
+// TODO(win32): id 形状已预留 win32 前缀，但 Windows 进程枚举与音频捕获尚未实现
+// （process-discovery.cjs 非 darwin 返回 []，native helper 无 Windows 构建）
 const VOICE_SOURCE_ID_PATTERN = /^process:(?:darwin|win32):[A-Za-z0-9_-]{1,2048}$/
 const MAX_VOICE_SOURCE_NAME_LENGTH = 120
 const MAX_VOICE_SOURCE_PATTERN_LENGTH = 200
@@ -54,19 +56,6 @@ function cleanSourceName(value) {
   const normalized = value.trim().replace(/\s+/g, ' ')
   if (!normalized || normalized.length > MAX_VOICE_SOURCE_NAME_LENGTH) return null
   return normalized
-}
-
-/**
- * 编译进程匹配 regex；空/非法回退默认 pattern（调用方如需拒绝语义请用
- * sanitizeVoiceSourcePattern）。
- */
-function compileVoiceSourcePattern(source) {
-  if (typeof source !== 'string' || !source.trim()) return DEFAULT_VOICE_APP_PATTERN
-  try {
-    return new RegExp(source, 'i')
-  } catch {
-    return DEFAULT_VOICE_APP_PATTERN
-  }
 }
 
 /** custom pattern 权威校验：必填、长度上限、必须可编译；非法抛 Error（NFR-3） */
@@ -153,13 +142,32 @@ function processIdentity(proc, platform) {
 }
 
 function processSourceId(platform, proc) {
+  // TODO(win32): 允许生成 win32 source id 仅为形状对齐；Windows 捕获链路尚未实现
   if (!['darwin', 'win32'].includes(platform)) return null
   const identity = processIdentity(proc, platform)
   return identity ? `process:${platform}:${encodeIdentity(identity)}` : null
 }
 
+/**
+ * 从 source_id 解出目标进程 identity（解码一次，供逐进程比较）。
+ * 形状非法、平台不符或解码为空 → null（调用方视作不匹配任何进程）。
+ */
+function voiceSourceIdentity(sourceId, platform) {
+  if (typeof sourceId !== 'string') return null
+  const match = /^process:(darwin|win32):([A-Za-z0-9_-]+)$/.exec(sourceId)
+  if (!match || match[1] !== platform) return null
+  const identity = decodeIdentity(match[2])
+  if (!identity?.trim()) return null
+  return normalizeProcessIdentity(identity, platform)
+}
+
+/**
+ * 单进程匹配。批量匹配（进程快照逐个比对）请先用 voiceSourceIdentity 解一次
+ * 目标 identity 再比 processIdentity —— 否则每个进程都要做一次 base64 编码。
+ */
 function processMatchesSource(proc, platform, sourceId) {
-  return processSourceId(platform, proc) === sourceId
+  const target = voiceSourceIdentity(sourceId, platform)
+  return target !== null && processIdentity(proc, platform) === target
 }
 
 // ------------------------------------------------------------- env 配置解析
@@ -277,12 +285,12 @@ module.exports = {
   VOICE_SOURCE_ID_PATTERN,
   VOICE_SOURCE_MODES,
   cleanSourceName,
-  compileVoiceSourcePattern,
   decodeIdentity,
   emptyVoiceSource,
   encodeIdentity,
   isValidVoiceSourceId,
   normalizeVoiceSource,
+  processIdentity,
   processMatchesSource,
   processSourceId,
   resolveVoiceSourceConfig,
@@ -290,4 +298,5 @@ module.exports = {
   resolveVoiceSourcePattern,
   sanitizeVoiceSource,
   sanitizeVoiceSourcePattern,
+  voiceSourceIdentity,
 }

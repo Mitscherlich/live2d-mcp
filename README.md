@@ -114,8 +114,7 @@ curl -s -X POST http://127.0.0.1:47832/events \
 
 ### 角色窗 UI 工具条
 
-- **Electron 默认**：隐藏顶栏/底栏，只保留角色与透明背景（顶部仍有隐形拖拽区可移动窗口）。
-- **Web / `bun run dev:legacy`**：始终显示状态栏与调试抽屉。
+- **默认**：隐藏顶栏/底栏，只保留角色与透明背景（顶部仍有隐形拖拽区可移动窗口）。
 - **调试时打开工具条**（任选其一）：
   - `LIVE2D_UI_CHROME=1 bun run dev`
   - 或 URL 加 `?debug=1` / `?ui=1`
@@ -162,13 +161,3 @@ bun run proof:f6
 ```
 
 > 请使用 `bun run test` 执行本仓库 `package.json` 中的 `node:test` 套件。裸命令 `bun test` 会进入 Bun 内置测试器，与本仓库脚本无关。
-
-## Legacy / 已降级
-
-旧的“独立 `mcp-server`（`:3000`）+ 浏览器 renderer（`:5173` / WS `:8765`）”双进程架构仅在迁移期保留，不再是快速开始或长期维护主路径。确需排查遗留兼容时运行：
-
-```bash
-bun run dev:legacy
-```
-
-新接入请始终使用 Electron 与 `http://127.0.0.1:47832/mcp`。

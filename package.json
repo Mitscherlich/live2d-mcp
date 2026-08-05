@@ -5,31 +5,26 @@
   "main": "electron/main.cjs",
   "packageManager": "bun@1.3.14",
   "workspaces": [
-    "mcp-server",
     "renderer"
   ],
   "scripts": {
     "dev": "bun scripts/dev-electron.mjs",
     "dev:electron": "bun scripts/dev-electron.mjs",
     "start": "electron .",
-    "build": "bun run --filter mcp-server build && bun run --filter renderer build && bun run build:electron",
-    "build:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/settings-preload.cjs && node --check electron/settings-renderer.js && node --check electron/tray.cjs && node --check electron/settings-store.cjs && node --check electron/settings-view.cjs && node --check electron/renderer-protocol.cjs && node --check electron/voice-events.cjs && node --check electron/bridge-server.cjs && node --check electron/mcp-server.cjs && node --check electron/renderer-commands.cjs && node --check electron/voice-source.cjs && node --check electron/audio-listener.cjs && node --check electron/native-process-audio-listener.cjs && node --check electron/process-discovery.cjs && node --check electron/audio-activity-gate.cjs && node --check electron/listener-status.cjs",
+    "build": "bun run --filter renderer build && bun run build:electron",
+    "build:electron": "node scripts/check-electron-syntax.mjs",
     "build:native": "sh scripts/build-native-helper.sh",
     "test": "node --test 'electron/test/**/*.test.cjs' 'renderer/test/**/*.test.ts'",
     "proof:f3": "node scripts/f3-lipsync-proof.mjs",
     "proof:f4": "node scripts/f4-bridge-proof.mjs",
     "proof:f5": "node scripts/f5-mcp-proof.mjs",
-    "proof:f6": "node scripts/f6-listener-proof.mjs",
-    "dev:mcp-server": "bun run --filter mcp-server dev",
-    "dev:renderer": "bun run --filter renderer dev",
-    "dev:legacy": "concurrently \"bun run dev:mcp-server\" \"bun run dev:renderer\""
+    "proof:f6": "node scripts/f6-listener-proof.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "concurrently": "^9.0.0",
     "electron": "39.8.10"
   },
   "engines": {

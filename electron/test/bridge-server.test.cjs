@@ -13,21 +13,7 @@ const {
   resolveBridgePort,
 } = require('../bridge-server.cjs')
 const { normalizeVoiceEvent } = require('../voice-events.cjs')
-
-/** 起临时端口实例；返回 { bridge, baseUrl, close } */
-async function startBridge(opts = {}) {
-  const bridge = createBridgeServer({ port: 0, onEvent: () => true, ...opts })
-  const address = await bridge.listen()
-  return { bridge, baseUrl: `http://127.0.0.1:${address.port}`, close: () => bridge.close() }
-}
-
-async function postJson(url, body, headers = {}) {
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: typeof body === 'string' ? body : JSON.stringify(body),
-  })
-}
+const { noopMcpHandler, postJson, startBridge } = require('./helpers/bridge.cjs')
 
 test('端口常量与 env 解析：默认 47832（避开 persona 47831），非法 env 回退', () => {
   assert.equal(DEFAULT_PORT, 47832)
@@ -73,10 +59,10 @@ test('originAllowed：无 Origin 放行（curl），仅受信本机 origin 放�
 test('GET /health：200 JSON，含 ok/bridgePort/voice 摘要与 getHealth 附加字段', async () => {
   const { baseUrl, close } = await startBridge({
     getHealth: () => ({
-      modelReady: null,
       windowVisible: true,
+      voiceInject: false,
       listener: { status: 'disabled', mode: 'external' },
-      mcp: { path: '/mcp', implemented: false },
+      mcp: { path: '/mcp', implemented: true },
     }),
   })
   try {
@@ -94,7 +80,7 @@ test('GET /health：200 JSON，含 ok/bridgePort/voice 摘要与 getHealth 附�
       eventsAccepted: 0,
       eventsRejected: 0,
     })
-    assert.equal(body.modelReady, null)
+    assert.equal(body.voiceInject, false)
     assert.equal(body.windowVisible, true)
     assert.equal(body.listener.mode, 'external')
     // 不含用户内容字段
@@ -314,17 +300,15 @@ test('/events 非 POST/OPTIONS → 405；未知路径 → 404', async () => {
   }
 })
 
-test('/mcp：未注入 mcpHandler 时保持 404 JSON 占位', async () => {
-  const { baseUrl, close } = await startBridge()
-  try {
-    for (const method of ['GET', 'POST', 'DELETE']) {
-      const res = await fetch(`${baseUrl}/mcp`, { method })
-      assert.equal(res.status, 404, method)
-      assert.deepEqual(await res.json(), { error: 'mcp not implemented (F5)' })
-    }
-  } finally {
-    await close()
-  }
+test('createBridgeServer：缺 mcpHandler 构造期抛 TypeError（/mcp 无运行时占位分支）', () => {
+  assert.throws(
+    () => createBridgeServer({ port: 0, onEvent: () => true }),
+    /mcpHandler 必填/,
+  )
+  assert.throws(
+    () => createBridgeServer({ port: 0, onEvent: () => true, mcpHandler: null }),
+    /mcpHandler 必填/,
+  )
 })
 
 // ------------------------------------------------------------------ F5 /mcp 委托
@@ -433,14 +417,16 @@ test('/mcp：body 解析失败映射 JSON-RPC 错误（坏 JSON -32700 / 超限 
 test('createBridgeServer 拒绝非 loopback bind host（决策 5/6 模块边界强制）', () => {
   for (const host of ['0.0.0.0', '192.168.1.10', 'example.com', '::']) {
     assert.throws(
-      () => createBridgeServer({ host, onEvent: () => true }),
+      () => createBridgeServer({ host, onEvent: () => true, mcpHandler: noopMcpHandler }),
       /loopback/,
       `应拒绝 ${host}`,
     )
   }
   // loopback 三形态放行
   for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
-    assert.doesNotThrow(() => createBridgeServer({ host, port: 0, onEvent: () => true }))
+    assert.doesNotThrow(() =>
+      createBridgeServer({ host, port: 0, onEvent: () => true, mcpHandler: noopMcpHandler }),
+    )
   }
 })
 
@@ -471,10 +457,14 @@ test('onEvent 返回 false → 422；抛异常 → 500 且服务存活', async (
 })
 
 test('端口占用时 listen 原样 reject（main 据此打印清晰日志）', async () => {
-  const first = createBridgeServer({ port: 0, onEvent: () => true })
+  const first = createBridgeServer({ port: 0, onEvent: () => true, mcpHandler: noopMcpHandler })
   const address = await first.listen()
   try {
-    const second = createBridgeServer({ port: address.port, onEvent: () => true })
+    const second = createBridgeServer({
+      port: address.port,
+      onEvent: () => true,
+      mcpHandler: noopMcpHandler,
+    })
     await assert.rejects(second.listen(), (error) => {
       assert.equal(error.code, 'EADDRINUSE')
       return true

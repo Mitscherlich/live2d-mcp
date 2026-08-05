@@ -12,7 +12,7 @@
  *    禁止第二套事件校验分叉），规范化后交 onEvent 回调（main 内接 sendVoiceEvent）
  *  - /mcp          → F5 已落地：委托 Streamable HTTP MCP handler
  *    （electron/mcp-server.cjs，POST/GET/DELETE；body 先过同上限 JSON 解析，
- *    解析失败映射 JSON-RPC 错误；未注入 mcpHandler 时保持 404 占位）
+ *    解析失败映射 JSON-RPC 错误）
  *
  * 安全（NFR-2 / SPEC §5.5）：
  *  - Host 头必须解析为 loopback（127.0.0.1 / localhost / [::1]），否则 403
@@ -21,14 +21,22 @@
  *    否则 403；无 Origin（curl 等）放行；/health 只读不含用户内容，不校验 Origin
  *  - body 上限 64KB；非法 JSON / 非法事件形状 / 越界 level 一律 4xx，不崩溃
  *
- * 纯 node:http、无 Electron 依赖：node:test 可直接起临时端口实例单测（NFR-3）。
+ * 纯 node:http、无 Electron 依赖，也不引 MCP SDK：/mcp 的路径与 JSON-RPC 错误帧
+ * 取自零依赖的 electron/mcp-protocol.cjs，SDK 只在 mcp-server.cjs 侧加载。
+ * node:test 可直接起临时端口实例单测（NFR-3）。
  * 分层与契约思路参考 persona electron/bridge-server.cjs（只读，MIT）；
  * 事件校验复用本仓 voice-events.cjs，未复制 persona 的 animation/mcp 逻辑。
  */
 
 const http = require('node:http')
 const { normalizeVoiceEvent } = require('./voice-events.cjs')
-const { sendJsonRpcError } = require('./mcp-server.cjs')
+const {
+  JSON_RPC_INTERNAL_ERROR,
+  JSON_RPC_PARSE_ERROR,
+  JSON_RPC_SERVER_ERROR,
+  MCP_PATH,
+  sendJsonRpcError,
+} = require('./mcp-protocol.cjs')
 
 const DEFAULT_PORT = 47832
 const LOOPBACK_HOST = '127.0.0.1'
@@ -121,12 +129,12 @@ function readJsonBody(request) {
  *   返回 false 视为投递失败（如窗口已销毁），HTTP 层回 422
  * @param {(voiceSummary: object) => object} [opts.getHealth] /health 附加字段回调
  *   （main 注入窗口/模型/listener 摘要；不含用户内容）
- * @param {((request: object, response: object, parsedBody: unknown) => Promise<void>)|null}
- *   [opts.mcpHandler] F5 Streamable HTTP MCP 处理器（electron/mcp-server.cjs）；
- *   未注入时 /mcp 保持 404 占位
+ * @param {(request: object, response: object, parsedBody: unknown) => Promise<void>}
+ *   opts.mcpHandler F5 Streamable HTTP MCP 处理器（electron/mcp-server.cjs）
  */
-function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent, getHealth, mcpHandler = null } = {}) {
+function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent, getHealth, mcpHandler } = {}) {
   if (typeof onEvent !== 'function') throw new TypeError('createBridgeServer: onEvent 必填')
+  if (typeof mcpHandler !== 'function') throw new TypeError('createBridgeServer: mcpHandler 必填')
   // 模块边界强制 loopback 绑定（决策 5/6；F4 验收发现 3 的防御性收紧）
   if (!LOOPBACK_HOSTS.has(String(host).toLowerCase())) {
     throw new TypeError(`createBridgeServer: host 必须为 loopback（127.0.0.1/localhost/[::1]），收到 ${JSON.stringify(host)}`)
@@ -267,7 +275,7 @@ function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent
       return
     }
 
-    if (pathname === '/mcp') {
+    if (pathname === MCP_PATH) {
       // F5 Streamable HTTP MCP：Origin 校验（写路径同 /events 口径）后委托 mcpHandler
       if (!originAllowed(origin)) {
         sendJson(response, 403, { error: 'origin not allowed' })
@@ -275,10 +283,6 @@ function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent
       }
       if (!MCP_METHODS.has(request.method)) {
         sendJson(response, 405, { error: 'method not allowed' }, { allow: 'POST, GET, DELETE' })
-        return
-      }
-      if (mcpHandler == null) {
-        sendJson(response, 404, { error: 'mcp not implemented (F5)' })
         return
       }
       const parsedBody =
@@ -292,12 +296,17 @@ function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent
           }
           // transport 之前的错误映射为 JSON-RPC 错误帧（MCP 客户端可解析）
           if (error?.code === 'BODY_TOO_LARGE') {
-            sendJsonRpcError(response, 413, -32000, 'request body is too large')
+            sendJsonRpcError(response, 413, JSON_RPC_SERVER_ERROR, 'request body is too large')
           } else if (error?.code === 'INVALID_JSON') {
-            sendJsonRpcError(response, 400, -32700, 'parse error: request body is not valid JSON')
+            sendJsonRpcError(
+              response,
+              400,
+              JSON_RPC_PARSE_ERROR,
+              'parse error: request body is not valid JSON',
+            )
           } else {
             console.error('[live2d] /mcp handler 异常:', error)
-            sendJsonRpcError(response, 500, -32603, 'internal server error')
+            sendJsonRpcError(response, 500, JSON_RPC_INTERNAL_ERROR, 'internal server error')
           }
         })
       return

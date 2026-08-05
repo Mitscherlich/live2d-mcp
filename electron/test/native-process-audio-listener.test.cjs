@@ -2,15 +2,17 @@
 
 /**
  * native-process-audio-listener.cjs 单测（ADR 0001 · F6 · NFR-3）
- * 全路径以 fake spawn（EventEmitter 假子进程）+ fake processDiscovery 驱动：
+ * 全路径以 fake spawn（EventEmitter 假子进程）+ fake processDiscovery + 假钟驱动：
  * helper 缺失/平台不支持、spawn 参数、waiting/ready/level/error 协议、
- * 会话开落、权限分类不退让、失败退避、stop 清理、NDJSON 解析。
+ * 会话开落、连续零电平抑制、轮询分档、权限分类不退让、失败退避、stop 清理、
+ * NDJSON 解析。
  */
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const {
+  DEFAULT_CAPTURING_POLL_INTERVAL_MS,
   NativeProcessAudioListener,
   createNdjsonParser,
   helperExecutableName,
@@ -18,6 +20,16 @@ const {
 } = require('../native-process-audio-listener.cjs')
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 假钟：注入 listener 的 now()，让轮询分档与失败退避可精确推进（不碰真实定时器） */
+function fakeClock(start = 1_700_000_000_000) {
+  let value = start
+  const now = () => value
+  now.advance = (ms) => {
+    value += ms
+  }
+  return now
+}
 
 /** fake 子进程：stdout/stderr 为独立 emitter；kill 记录并可手动触发 exit */
 function fakeChild() {
@@ -34,12 +46,17 @@ function fakeChild() {
 }
 
 function harness({ pids = [4242], rootPids, listenerOptions = {}, spawnImpl } = {}) {
-  const events = { levels: [], activities: [], sessions: [], statuses: [] }
+  const events = { levels: [], sessions: [], statuses: [] }
   const spawns = []
+  const discoveries = []
+  const clock = fakeClock()
   const listener = new NativeProcessAudioListener({
     platform: 'darwin',
     helperPath: '/fake/live2d-audio-listener',
-    processDiscovery: async () => ({ pids, rootPids: rootPids ?? pids }),
+    processDiscovery: async () => {
+      discoveries.push(clock())
+      return { pids, rootPids: rootPids ?? pids }
+    },
     spawnProcess:
       spawnImpl ??
       ((file, args) => {
@@ -48,13 +65,13 @@ function harness({ pids = [4242], rootPids, listenerOptions = {}, spawnImpl } = 
         return child
       }),
     onLevel: (level) => events.levels.push(level),
-    onActivity: (activity) => events.activities.push(activity),
     onSession: (active) => events.sessions.push(active),
     onStatus: (status) => events.statuses.push(status),
     pollIntervalMs: 60_000, // 测试手动 poll，不依赖定时器
+    now: clock,
     ...listenerOptions,
   })
-  return { events, listener, spawns }
+  return { clock, discoveries, events, listener, spawns }
 }
 
 // existsSync 钩子：helperPath 是否存在由测试注入（构造里 helperPath 显式给定，
@@ -131,27 +148,83 @@ test('ready → capturing + source；resolved pids 并入捕获 key（churn 吸�
   listener.stop()
 })
 
-test('level 流 → onLevel/onActivity/onSession；静音释放回落 listening；8s 空闲落 session', async () => {
-  const { events, listener, spawns } = harness({
-    listenerOptions: { sessionIdleMs: 120, speechReleaseMs: 20 },
-  })
+test('level 直接转发 onLevel（不派生 activity）；8s 空闲落 session', async () => {
+  const { events, listener, spawns } = harness({ listenerOptions: { sessionIdleMs: 120 } })
   listener.helperPath = EXISTING
   await listener.start()
   const child = spawns[0].child
   child.emitLine({ type: 'ready', source: 's', pids: [4242] })
   child.emitLine({ type: 'level', level: 0.6 })
-  // 会话开启 + 电平转发 + speaking（levels 首元素是启动 detach 时 gate.reset 的 0）
+  // 会话开启 + 电平原样转发（levels 首元素是启动 detach 时补发的首个 0）
   assert.deepEqual(events.sessions, [true])
-  assert.equal(events.levels.at(-1), 0.6)
-  assert.deepEqual(events.activities, ['speaking'])
-  // 静音 → speechReleaseMs 后回落 listening（会话仍在：空闲计时从最后有声起算）
+  assert.deepEqual(events.levels, [0, 0.6])
+  // listening ⇄ speaking 由 renderer 的 VoiceStateMachine 从同一条 level 流推导，
+  // main 侧不再产出 activity：listener 契约只剩 onSession / onLevel / onStatus
+  assert.equal(typeof listener.onActivity, 'undefined')
+  // sessionIdleMs 无有声电平 → 会话结束并补一个 0
   child.emitLine({ type: 'level', level: 0 })
-  await sleep(50)
-  assert.deepEqual(events.activities, ['speaking', 'listening'])
-  assert.deepEqual(events.sessions, [true])
-  // sessionIdleMs 无有声电平 → 会话结束
-  await sleep(120)
+  await sleep(160)
   assert.deepEqual(events.sessions, [true, false])
+  assert.deepEqual(events.levels, [0, 0.6, 0])
+  listener.stop()
+})
+
+test('连续零电平抑制：非零通过、首零通过、连续零丢弃、零后非零恢复', async () => {
+  const { events, listener, spawns } = harness({ listenerOptions: { sessionIdleMs: 10_000 } })
+  listener.helperPath = EXISTING
+  await listener.start()
+  const child = spawns[0].child
+  child.emitLine({ type: 'ready', source: 's', pids: [4242] })
+  // 启动 detach 已补发首个 0（renderer 靠它起算 900ms 静音保持）
+  assert.deepEqual(events.levels, [0])
+  child.emitLine({ type: 'level', level: 0.4 })
+  child.emitLine({ type: 'level', level: 0.5 })
+  assert.deepEqual(events.levels, [0, 0.4, 0.5], '非零 level 逐条通过')
+  child.emitLine({ type: 'level', level: 0 })
+  assert.deepEqual(events.levels, [0, 0.4, 0.5, 0], '静音后第一条 0 必须送达')
+  for (let i = 0; i < 30; i += 1) child.emitLine({ type: 'level', level: 0 })
+  assert.deepEqual(events.levels, [0, 0.4, 0.5, 0], '此后连续 0 全部抑制')
+  child.emitLine({ type: 'level', level: 0.3 })
+  child.emitLine({ type: 'level', level: 0 })
+  assert.deepEqual(events.levels, [0, 0.4, 0.5, 0, 0.3, 0], '再次非零后零抑制重新起算')
+  listener.stop()
+})
+
+test('轮询分档：未捕获按 tick 发现；已捕获降到 12s 才真正跑一次 ps', async () => {
+  let pids = []
+  const { clock, discoveries, listener, spawns } = harness()
+  listener.helperPath = EXISTING
+  listener.processDiscovery = async () => {
+    discoveries.push(clock())
+    return { pids, rootPids: pids }
+  }
+  assert.equal(DEFAULT_CAPTURING_POLL_INTERVAL_MS, 12_000)
+
+  await listener.start() // 第 1 次发现：无匹配进程
+  assert.equal(discoveries.length, 1)
+  // 未捕获：每次 tick 都真正执行发现，节奏不降档
+  clock.advance(1_500)
+  await listener.poll()
+  clock.advance(1_500)
+  await listener.poll()
+  assert.equal(discoveries.length, 3)
+  assert.equal(spawns.length, 0)
+
+  pids = [4242]
+  clock.advance(1_500)
+  await listener.poll() // 第 4 次发现 → 捕获
+  assert.equal(spawns.length, 1)
+  assert.equal(discoveries.length, 4)
+
+  // 已捕获：降档周期内的 tick 全部早退，不再 spawn ps
+  for (let elapsed = 1_500; elapsed < DEFAULT_CAPTURING_POLL_INTERVAL_MS; elapsed += 1_500) {
+    clock.advance(1_500)
+    await listener.poll()
+  }
+  assert.equal(discoveries.length, 4, '捕获期 12s 内不再执行进程发现')
+  clock.advance(1_500) // 距上次发现累计满 12s
+  await listener.poll()
+  assert.equal(discoveries.length, 5, '超过 capturingPollIntervalMs 后恢复一次发现')
   listener.stop()
 })
 
@@ -224,7 +297,7 @@ test('helper 无错误消息裸退（code≠0）→ helper-exited 分类', async
 
 test('无匹配进程 → detach 杀 helper 并报 no-matching-process；会话结束', async () => {
   let pids = [4242]
-  const { events, listener, spawns } = harness({ listenerOptions: { sessionIdleMs: 10_000 } })
+  const { clock, events, listener, spawns } = harness({ listenerOptions: { sessionIdleMs: 10_000 } })
   listener.helperPath = EXISTING
   listener.processDiscovery = async () => ({ pids, rootPids: pids })
   await listener.start()
@@ -233,6 +306,7 @@ test('无匹配进程 → detach 杀 helper 并报 no-matching-process；会话�
   child.emitLine({ type: 'level', level: 0.5 })
   assert.deepEqual(events.sessions, [true])
   pids = [] // 目标进程消失
+  clock.advance(DEFAULT_CAPTURING_POLL_INTERVAL_MS) // 捕获期分档：过了降档周期才真正发现
   await listener.poll()
   assert.equal(child.killed, true)
   assert.deepEqual(events.sessions, [true, false])

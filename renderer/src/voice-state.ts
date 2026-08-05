@@ -34,7 +34,11 @@ export type VoiceEvent =
 export const VOICE_DEFAULTS = {
   /** level 超过该值视为有声（persona gate 默认 0.018） */
   speechThreshold: 0.018,
-  /** level 低于该值时嘴参目标直接为 0（persona lip-sync 的 0.008） */
+  /**
+   * level 低于该值时嘴参目标直接为 0（persona lip-sync 的 0.008）。
+   * 与 electron/native-process-audio-listener.cjs 的 SESSION_AUDIBLE_LEVEL 语义耦合，
+   * 两侧必须相等——renderer/test/voice-state.test.ts 有跨侧一致性护栏。
+   */
   audibleFloor: 0.008,
   /** 短静音保持：speaking 期间无声后保持 speaking 的时长（SPEC §5.4 默认 900ms） */
   silenceHoldMs: 900,

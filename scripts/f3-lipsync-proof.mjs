@@ -19,25 +19,17 @@
  * 无真实模型时写入为 no-op，但快照的 smoothed/lastMouthWrite 仍证明嘴参目标被驱动。
  */
 
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { launchElectron } from './lib/electron-harness.mjs'
+import {
+  check,
+  connectCdp,
+  createEvaluate,
+  findRendererTarget,
+  proofCounts,
+  sleep,
+} from './lib/proof-harness.mjs'
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const FRAME_MS = 16.7
-
-let failures = 0
-function check(label, cond, detail = '') {
-  if (cond) {
-    console.log(`  ✔ ${label}`)
-  } else {
-    failures += 1
-    console.error(`  ✘ ${label}${detail ? ` —— ${detail}` : ''}`)
-  }
-}
 
 // ---------------------------------------------------------------- logic 模式
 async function runLogic() {
@@ -133,86 +125,23 @@ async function runLogic() {
 // ----------------------------------------------------------------- e2e 模式
 const CDP_PORT = 9223
 
-async function fetchJson(url, retries = 40, intervalMs = 250) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const res = await fetch(url)
-      if (res.ok) return await res.json()
-    } catch {
-      // CDP 尚未就绪
-    }
-    await new Promise((r) => setTimeout(r, intervalMs))
-  }
-  throw new Error(`CDP 不可达: ${url}`)
-}
-
-function connectCdp(wsUrl) {
-  const ws = new WebSocket(wsUrl)
-  let seq = 0
-  const pending = new Map()
-  ws.addEventListener('message', (event) => {
-    const msg = JSON.parse(String(event.data))
-    if (msg.id !== undefined && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id)
-      pending.delete(msg.id)
-      if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`))
-      else resolve(msg.result)
-    }
-  })
-  const ready = once(ws, 'open')
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const id = ++seq
-      pending.set(id, { resolve, reject })
-      ws.send(JSON.stringify({ id, method, params }))
-    })
-  return { ready, send, close: () => ws.close() }
-}
-
 async function runE2e() {
   console.log('[proof:e2e] 启动 Electron（LIVE2D_VOICE_INJECT=1，prod dist，隔离 user-data-dir）…')
-  const distIndex = path.join(ROOT, 'renderer', 'dist', 'index.html')
-  if (!fs.existsSync(distIndex)) {
-    throw new Error('renderer/dist/index.html 不存在，请先运行 bun run build')
-  }
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-f3-e2e-'))
-  const electronBin = path.join(ROOT, 'node_modules', '.bin', 'electron')
-  const child = spawn(
-    electronBin,
-    ['.', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${userDataDir}`, '--no-first-run'],
-    {
-      cwd: ROOT,
-      env: { ...process.env, LIVE2D_VOICE_INJECT: '1', LIVE2D_RENDERER_LOG: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  )
-  let appLog = ''
-  child.stdout.on('data', (d) => {
-    appLog += String(d)
-  })
-  child.stderr.on('data', (d) => {
-    appLog += String(d)
+  // bridgePort=null：F3 只走 renderer→main→renderer 的注入回环，不依赖 bridge 端口。
+  const app = await launchElectron({
+    name: 'f3-e2e',
+    bridgePort: null,
+    cdpPort: CDP_PORT,
+    environment: { LIVE2D_VOICE_INJECT: '1' },
   })
 
   let cdp
   try {
-    const targets = await fetchJson(`http://127.0.0.1:${CDP_PORT}/json/list`)
-    const page = targets.find((t) => t.type === 'page' && t.url.startsWith('live2d-app://'))
-    if (!page) throw new Error(`未找到角色窗 CDP target: ${JSON.stringify(targets.map((t) => t.url))}`)
+    const page = await findRendererTarget(CDP_PORT)
     cdp = connectCdp(page.webSocketDebuggerUrl)
     await cdp.ready
     await cdp.send('Runtime.enable')
-
-    const evaluate = async (expr) => {
-      const result = await cdp.send('Runtime.evaluate', {
-        expression: expr,
-        returnByValue: true,
-      })
-      if (result.exceptionDetails) {
-        throw new Error(`页面内求值失败: ${JSON.stringify(result.exceptionDetails).slice(0, 300)}`)
-      }
-      return result.result.value
-    }
+    const evaluate = createEvaluate(cdp)
 
     // 等 renderer 口型挂接完成
     let injected = false
@@ -220,7 +149,7 @@ async function runE2e() {
       injected = await evaluate(
         `typeof window.live2d !== 'undefined' && typeof window.live2d.injectVoice === 'function' && !!window.__live2dVoiceDebug`,
       ).catch(() => false)
-      if (!injected) await new Promise((r) => setTimeout(r, 250))
+      if (!injected) await sleep(250)
     }
     check('页面内 injectVoice 与调试快照可用', injected === true)
 
@@ -235,7 +164,7 @@ async function runE2e() {
     )
     const inj2 = await evaluate(`window.live2d.injectVoice({ type: 'audio-level', level: 0.8 })`)
     check('injectVoice 受理（浅校验通过）', inj1 === true && inj2 === true)
-    await new Promise((r) => setTimeout(r, 500))
+    await sleep(500)
     const snap1 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] 注入 level 0.8 后 500ms:', JSON.stringify(snap1))
     check('activity → speaking', snap1.activity === 'speaking', snap1.activity)
@@ -246,7 +175,7 @@ async function runE2e() {
 
     // level 变化 → 嘴参目标值变化
     await evaluate(`window.live2d.injectVoice({ type: 'audio-level', level: 0.2 })`)
-    await new Promise((r) => setTimeout(r, 600))
+    await sleep(600)
     const snap2 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] 注入 level 0.2 后 600ms:', JSON.stringify(snap2))
     check('嘴参目标随 level 下降（< 0.7）', snap2.lastMouthWrite < 0.7,
@@ -254,13 +183,13 @@ async function runE2e() {
 
     // 短静音保持：level 归零后 400ms 仍 speaking
     await evaluate(`window.live2d.injectVoice({ type: 'audio-level', level: 0 })`)
-    await new Promise((r) => setTimeout(r, 400))
+    await sleep(400)
     const snap3 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] 静音后 400ms:', JSON.stringify(snap3))
     check('静音 400ms 内保持 speaking（900ms hold）', snap3.activity === 'speaking', snap3.activity)
 
     // 超过 900ms → 回落
-    await new Promise((r) => setTimeout(r, 800))
+    await sleep(800)
     const snap4 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] 静音后 ~1200ms:', JSON.stringify(snap4))
     check('静音超 900ms 回落（listening/idle）', snap4.activity !== 'speaking', snap4.activity)
@@ -269,7 +198,7 @@ async function runE2e() {
     await evaluate(
       `window.live2d.injectVoice({ type: 'state', state: { phase: 'inactive' } })`,
     )
-    await new Promise((r) => setTimeout(r, 300))
+    await sleep(300)
     const snap5 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] session inactive 后:', JSON.stringify(snap5))
     check('session 结束 → idle', snap5.activity === 'idle', snap5.activity)
@@ -280,24 +209,18 @@ async function runE2e() {
     const before = snap5.events
     await evaluate(`window.live2d.injectVoice({ type: 'audio-level', level: 'loud' })`)
     await evaluate(`window.live2d.injectVoice({ type: 'motion', group: 'Idle' })`)
-    await new Promise((r) => setTimeout(r, 300))
+    await sleep(300)
     const snap6 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     check('非法负载被 main 规范化丢弃', snap6.events === before,
       `events ${before} → ${snap6.events}`)
 
-    check('主进程日志确认注入模式开启', appLog.includes('voice 测试注入已开启'))
+    check('主进程日志确认注入模式开启', app.appLog().includes('voice 测试注入已开启'))
   } finally {
-    if (cdp) cdp.close()
-    child.kill('SIGTERM')
-    const code = await Promise.race([
-      once(child, 'exit').then(([c]) => c),
-      new Promise((r) => setTimeout(() => r('timeout'), 8000)),
-    ])
-    if (code === 'timeout') child.kill('SIGKILL')
-    fs.rmSync(userDataDir, { recursive: true, force: true })
-    const leaked = appLog.includes('render-process-gone')
+    cdp?.close()
+    const exit = await app.close()
+    const leaked = app.appLog().includes('render-process-gone')
     check('Electron 干净退出（无 renderer 崩溃）', !leaked)
-    console.log('[proof:e2e] Electron 退出码:', code)
+    console.log('[proof:e2e] Electron 退出码:', exit === null ? 'timeout' : exit.code)
   }
 }
 
@@ -310,9 +233,10 @@ if (withE2e) {
   await runE2e()
 }
 console.log('')
+const { checks, failures } = proofCounts()
 if (failures > 0) {
-  console.error(`✘ F3 证据失败：${failures} 项断言未过`)
+  console.error(`✘ F3 证据失败：${failures}/${checks} 项断言未过`)
   process.exit(1)
 }
-console.log('✔ F3 证据通过：注入 level/activity 可改变嘴参目标（mock 与' +
+console.log(`✔ F3 证据通过（${checks} 项断言）：注入 level/activity 可改变嘴参目标（mock 与` +
   (withE2e ? ' CDP 端到端' : '') + '证据）')

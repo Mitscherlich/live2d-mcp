@@ -17,9 +17,12 @@
 
 ## 1. 背景与问题陈述
 
-### 1.1 现状
+### 1.1 现状（历史背景）
 
-当前 `live2d-mcp` 为「**独立 Node MCP Server + 浏览器 Live2D 渲染器**」双进程架构：
+> 本节描述的是本 SPEC 撰写时的起点形态。该架构已于 F1–F7 迁移完成并整体删除，
+> 当前实现见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)；本节仅保留作历史背景。
+
+彼时 `live2d-mcp` 为「**独立 Node MCP Server + 浏览器 Live2D 渲染器**」双进程架构：
 
 ```
 Agent (Codex/Claude/…)
@@ -174,12 +177,23 @@ live2d-mcp/
 **Listener 契约**（所有来源统一）：
 
 - `onSession(active: boolean)`
-- `onActivity("listening" | "speaking")`
 - `onLevel(level: number)` where `0 ≤ level ≤ 1`
 - `onStatus(diagnostics)`
 
+listener **不产出 activity**：它只报「会话开没开」与「当前电平」两件客观事实。
+main 收到 `onSession` 只发 `state`（`phase: active|inactive`，`activity` 相应取
+`listening|idle`），收到 `onLevel` 只发 `audio-level`。`listening ⇄ speaking` 的
+判定全部由渲染侧状态机从同一条 level 流推导（见下），避免 main 与 renderer
+各推一遍而产生分叉。
+
+外部经 `POST /events` 注入的显式 `state.activity` 仍然生效（§8.1），
+用于不接 listener 的集成方直接驱动状态。
+
 **渲染侧**：
 
+- activity 推导：状态机在 session 激活（`listening`）后，按 `level` 是否越过可闻阈值
+  在 `listening ⇄ speaking` 间切换；session 结束立即回 `idle`。这是 activity 的
+  **唯一推导点**（显式注入的 activity 直接覆盖）。
 - 嘴型：每个动画帧根据当前 `level` 与 `activity===speaking` 平滑驱动嘴参（smoothing 可参考 persona `useAmplitudeLipSync` 思想，映射到 Live2D `ParamMouthOpenY` 等）。
 - 身体/动作：speaking 期间可播放/保持说话相关 motion；短静音（建议默认 **900ms**，可配置常量）内保持 speaking，避免句间抖动切回 idle。
 - MCP 触发的 `play_motion` / `set_expression` **可临时优先**于 voice 驱动身体动作；口型 level 仍可继续。
