@@ -6,15 +6,50 @@
  * 4. 更新状态栏 UI
  */
 
-import { Live2DApp } from './live2d-app.js'
+import type { Live2DApp } from './live2d-app.js'
 import { WsClient } from './ws-client.js'
 import { createCommandHandler } from './command-handler.js'
+import { createVoiceLipSync, type MouthParamTarget } from './lip-sync.js'
+import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
+
+// ADR 0001 · F2：Electron 壳经 preload 暴露 window.live2d；浏览器（legacy 双进程）无此对象
+const isElectron = typeof window.live2d !== 'undefined'
+
+/**
+ * 顶部状态栏 + 底部调试条显示策略：
+ *  - 纯 Web / legacy：始终显示
+ *  - Electron 默认：隐藏（角色陪伴窗更干净）
+ *  - Electron 调试：?debug=1 / ?ui=1 / #debug / localStorage live2d.uiChrome=1 /
+ *    或 preload.uiChrome（LIVE2D_UI_CHROME / LIVE2D_DEVTOOLS / --live2d-ui-chrome）
+ *  - LIVE2D_RENDERER_LOG 仅终端 console，不打开工具条
+ *
+ * 与 public/ui-chrome-boot.js 保持一致（boot 负责首屏，此处再同步一次 body class）。
+ */
+function shouldShowUiChrome(): boolean {
+  if (!isElectron) return true
+  if (window.live2d?.uiChrome === true) return true
+  try {
+    const q = new URLSearchParams(location.search)
+    if (q.get('debug') === '1' || q.get('ui') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  if (typeof location.hash === 'string' && location.hash.includes('debug')) return true
+  try {
+    if (localStorage.getItem('live2d.uiChrome') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return false
+}
 
 const canvas = document.getElementById('live2d-canvas') as HTMLCanvasElement
 const wsDot = document.getElementById('ws-dot') as HTMLDivElement
 const wsStatus = document.getElementById('ws-status') as HTMLSpanElement
 const modelDot = document.getElementById('model-dot') as HTMLDivElement
 const modelStatus = document.getElementById('model-status') as HTMLSpanElement
+const voiceDot = document.getElementById('voice-dot') as HTMLDivElement
+const voiceStatus = document.getElementById('voice-status') as HTMLSpanElement
 const currentStateEl = document.getElementById('current-state') as HTMLDivElement
 const debugPanel = document.getElementById('debug-panel') as HTMLDivElement
 const debugHeader = debugPanel.querySelector('.debug-header') as HTMLDivElement
@@ -242,52 +277,308 @@ function initDebugPanel(app: Live2DApp) {
   })
 }
 
-// 解锁浏览器 autoplay 限制：首次用户交互时播放一段静音音频
-function setupAudioUnlock() {
-  const unlock = () => {
-    const ctx = new AudioContext()
-    const buf = ctx.createBuffer(1, 1, 22050)
-    const src = ctx.createBufferSource()
-    src.buffer = buf
-    src.connect(ctx.destination)
-    src.start(0)
-    ctx.resume().then(() => ctx.close())
-    document.removeEventListener('pointerdown', unlock)
-    document.removeEventListener('keydown', unlock)
+// FR-D3：缺模型 / Cubism Core 时展示引导（live2d-app.ts 的 loadModel 亦会触发，幂等）
+function showModelLoadError() {
+  const el = document.getElementById('model-load-error')
+  if (el) el.style.display = 'block'
+}
+
+/**
+ * ADR 0001 · F3：voice 状态机 + 口型驱动（Electron 一体化路径）。
+ *
+ * - 事件源：preload `window.live2d.onVoiceEvent`（main 推送的规范化 state/audio-level；
+ *   F4 bridge /events 与本片测试注入 injectVoice 共用该通道）。
+ * - 嘴参：模型参数表解析 ParamMouthOpenY 或等效别名；模型缺失/无该参时写入 no-op
+ *   （状态机与平滑照常推进，调试快照可见 smoothed 值变化）。
+ * - 帧驱动：有模型走 PIXI ticker（LOW 优先级，motion 之后写嘴参）；
+ *   无模型走 rAF（注入链路在无模型环境仍可证明嘴参目标值变化）。
+ */
+function initVoiceLipSync(app: Live2DApp | null) {
+  let mouthParam: MouthParamTarget | null = null
+  const info = app?.getModelInfo() ?? null
+  if (info) {
+    const mouthId = resolveMouthParamId(info.parameters.map((p) => p.id))
+    if (mouthId) {
+      const p = info.parameters.find((param) => param.id === mouthId)!
+      mouthParam = { id: p.id, min: p.min, max: p.max }
+    } else {
+      console.warn('[Voice] 模型参数表无 ParamMouthOpenY 或等效嘴参，口型写入 no-op（仅一次）')
+    }
   }
-  document.addEventListener('pointerdown', unlock)
-  document.addEventListener('keydown', unlock)
+
+  const lip = createVoiceLipSync({
+    mouthParam,
+    writeMouth: (paramId, value) => {
+      if (paramId && app) app.setParameter(paramId, value)
+      // 无嘴参/无模型：no-op（快照仍记录 lastMouthWrite，证明目标值被驱动）
+    },
+  })
+
+  /**
+   * 助手（Codex）出声时的肢体表现：对齐 persona 的 Listening/Speaking 槽位思想。
+   * Hiyori 无独立 Speaking 组时用 Idle 循环；speaking 时用略高优先级保证口型期间有体态。
+   * 注意：这是 **agent 播放音频** 的视觉反应，不是用户麦克风说话。
+   */
+  function applyVoiceBodyMotion(activity: VoiceActivity) {
+    if (!app?.isLoaded()) return
+    if (activity === 'speaking') {
+      // priority 2：体态；口型仍由 LOW ticker 在 motion 之后写 ParamMouthOpenY
+      app.playMotion('Idle', -1, 2)
+      currentMotion = motionLabel('Idle')
+      updateStateBar()
+      return
+    }
+    if (activity === 'listening' || activity === 'idle') {
+      app.playMotion('Idle', -1, 1)
+      currentMotion = motionLabel('Idle')
+      updateStateBar()
+    }
+  }
+
+  let shownActivity: VoiceActivity | '' = ''
+  let lastShownLevel = -1
+  function syncVoiceUI(force = false) {
+    const snap = lip.snapshot()
+    const activity = snap.activity
+    const level = snap.level
+    const activityChanged = activity !== shownActivity
+    if (activityChanged) {
+      shownActivity = activity
+      voiceDot.classList.toggle('listening', activity === 'listening')
+      voiceDot.classList.toggle('speaking', activity === 'speaking')
+      applyVoiceBodyMotion(activity)
+      console.log(`[Voice] activity → ${activity} (level=${level.toFixed(3)})`)
+    }
+    // 状态栏展示电平，便于确认「Codex 出声」是否被采到（非用户麦克风）
+    const levelBucket = Math.round(level * 20) / 20
+    if (force || activityChanged || levelBucket !== lastShownLevel) {
+      lastShownLevel = levelBucket
+      const levelStr = level > 0.005 ? ` · L${level.toFixed(2)}` : ''
+      voiceStatus.textContent = `助手语音 ${activity}${levelStr}`
+    }
+  }
+  syncVoiceUI(true)
+
+  const offVoice = window.live2d?.onVoiceEvent?.((event) => {
+    lip.handleEvent(event)
+    // 立即刷 UI（不等下一帧），便于 live-voice 出声瞬间看到 speaking
+    syncVoiceUI()
+  })
+  if (!offVoice) console.warn('[Voice] preload 未暴露 onVoiceEvent，voice 通道不可用')
+
+  if (app) {
+    app.addTicker((dt) => {
+      lip.tick(dt)
+      syncVoiceUI()
+    })
+  } else {
+    let prev = performance.now()
+    const frame = (t: number) => {
+      const dt = t - prev
+      prev = t
+      lip.tick(dt)
+      syncVoiceUI()
+      requestAnimationFrame(frame)
+    }
+    requestAnimationFrame(frame)
+  }
+
+  // 调试快照：scripts/f3-lipsync-proof.mjs 经 CDP 读取，证明注入改变了嘴参目标
+  window.__live2dVoiceDebug = {
+    snapshot: () => ({
+      ...lip.snapshot(),
+      modelLoaded: app?.isLoaded() ?? false,
+      injectEnabled: typeof window.live2d?.injectVoice === 'function',
+    }),
+  }
+  console.log(`[Voice] 口型驱动已挂接（嘴参: ${mouthParam?.id ?? '未解析（no-op）'}，注入: ${
+    typeof window.live2d?.injectVoice === 'function' ? '开' : '关'
+  }）`)
+}
+
+/**
+ * ADR 0001 · F5：main → renderer 命令通道（MCP 视觉工具执行路径）。
+ *
+ * main（Electron 一体化 MCP 工具回调）经 preload `window.live2d.onCommand` 下发
+ * 白名单命令（getModelInfo / setExpression / playMotion / lookAt / setParameter /
+ * reset），此处映射到 Live2DApp；无模型时返回 ok:false 清晰降级（不崩溃），
+ * MCP 工具层转为 isError。调试快照 __live2dCommandDebug 供 scripts/f5-mcp-proof.mjs
+ * 经 CDP 断言命令真实到达 renderer。
+ */
+function initCommandChannel(app: Live2DApp | null) {
+  const counts: Record<string, number> = {}
+  let lastCommand: string | null = null
+  let lastError: string | null = null
+  const MODEL_MISSING =
+    'Live2D 模型未加载（Cubism Core 或模型资源缺失，见窗口内引导）；命令未执行'
+
+  const off = window.live2d?.onCommand?.(({ type, params }) => {
+    counts[type] = (counts[type] ?? 0) + 1
+    lastCommand = type
+    const loaded = Boolean(app && app.isLoaded())
+
+    if (type === 'getModelInfo') {
+      if (!loaded) {
+        lastError = MODEL_MISSING
+        return { ok: false, error: MODEL_MISSING }
+      }
+      return { ok: true, data: app!.getModelInfo() }
+    }
+
+    if (!loaded) {
+      lastError = MODEL_MISSING
+      return { ok: false, error: MODEL_MISSING }
+    }
+    const live2d = app!
+
+    switch (type) {
+      case 'setExpression': {
+        const expression = typeof params.expression === 'string' ? params.expression : ''
+        const ok = expression !== '' && live2d.setExpression(expression)
+        if (ok) {
+          currentExpression = expression
+          updateStateBar()
+          return { ok: true, data: { expression } }
+        }
+        lastError = `表情 "${expression}" 不存在或不可用`
+        return { ok: false, error: `${lastError}（用 get_model_info 查询可用表情）` }
+      }
+      case 'playMotion': {
+        const group = typeof params.group === 'string' ? params.group : ''
+        const index = typeof params.index === 'number' ? Math.trunc(params.index) : -1
+        const priority = typeof params.priority === 'number' ? Math.trunc(params.priority) : 2
+        const ok = group !== '' && live2d.playMotion(group, index, priority)
+        if (ok) {
+          currentMotion = motionLabel(group, index >= 0 ? index : undefined)
+          updateStateBar()
+          return { ok: true, data: { group, index, priority } }
+        }
+        lastError = `动作分组 "${group}" 不存在或不可用`
+        return { ok: false, error: `${lastError}（用 get_model_info 查询可用分组）` }
+      }
+      case 'lookAt': {
+        const x = typeof params.x === 'number' ? params.x : 0
+        const y = typeof params.y === 'number' ? params.y : 0
+        const ok = live2d.lookAt(x, y)
+        return ok ? { ok: true, data: { x, y } } : { ok: false, error: 'lookAt 执行失败' }
+      }
+      case 'setParameter': {
+        const paramId = typeof params.param_id === 'string' ? params.param_id : ''
+        const value = typeof params.value === 'number' ? params.value : Number.NaN
+        const ok = paramId !== '' && Number.isFinite(value) && live2d.setParameter(paramId, value)
+        return ok
+          ? { ok: true, data: { param_id: paramId, value } }
+          : { ok: false, error: `参数 "${paramId}" 写入失败` }
+      }
+      case 'reset': {
+        const ok = live2d.reset()
+        if (ok) {
+          currentExpression = '-'
+          currentMotion = '-'
+          updateStateBar()
+        }
+        return ok ? { ok: true } : { ok: false, error: 'reset 执行失败' }
+      }
+      default:
+        return { ok: false, error: `未知命令: ${type}` }
+    }
+  })
+
+  window.__live2dCommandDebug = {
+    snapshot: () => ({
+      counts: { ...counts },
+      lastCommand,
+      lastError,
+      modelLoaded: app?.isLoaded() ?? false,
+      channelAttached: Boolean(off),
+    }),
+  }
+  if (off) {
+    console.log('[Command] main→renderer 命令通道已挂接（MCP 视觉工具可执行）')
+  } else {
+    console.warn('[Command] preload 未暴露 onCommand，命令通道不可用')
+  }
 }
 
 async function main() {
-  setupAudioUnlock()
-
-  // 初始化 Live2D
-  const app = new Live2DApp()
-
-  try {
-    await app.init(canvas)
-    modelDot.classList.add('connected')
-    modelStatus.textContent = '模型已加载'
-    console.log('[Main] Live2D app initialized')
-    initDebugPanel(app)
-    initMouseFollow(app)
-    initClickInteraction(app)
-
-    hitareaToggle.addEventListener('change', () => {
-      app.showHitAreaOverlay(hitareaToggle.checked)
-    })
-  } catch (e) {
-    modelStatus.textContent = '模型加载失败'
-    console.error('[Main] Failed to initialize Live2D:', e)
-    // 即使模型加载失败，也尝试连接 WS（方便调试）
+  if (isElectron) {
+    // Electron 壳：透明底；默认隐藏顶/底工具条（见 index.html electron-mode:not(.ui-chrome)）
+    // boot 脚本可能已写过 html class；这里同步到 body 并按需打开 ui-chrome。
+    document.documentElement.classList.add('electron-mode')
+    document.body.classList.add('electron-mode')
+    if (shouldShowUiChrome()) {
+      document.documentElement.classList.add('ui-chrome')
+      document.body.classList.add('ui-chrome')
+      console.log('[Main] UI chrome 已开启（调试/显式开关）')
+    } else {
+      document.documentElement.classList.remove('ui-chrome')
+      document.body.classList.remove('ui-chrome')
+      console.log('[Main] UI chrome 已隐藏（Electron 陪伴模式；调试用 LIVE2D_UI_CHROME=1 或 ?debug=1）')
+    }
+    console.log(
+      `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`,
+    )
   }
+
+  // 动态导入渲染核心：pixi-live2d-display/cubism4 在缺少 live2dcubismcore.min.js 时于
+  // 模块加载期抛错（"Could not find Cubism 4 runtime"）；静态 import 会带走整个入口，
+  // 缺模引导（FR-D3）将无从显示。Core 缺失与模型 404 两类失败都必须落入引导 UI。
+  let app: Live2DApp | null = null
+  try {
+    const mod = await import('./live2d-app.js')
+    app = new mod.Live2DApp()
+  } catch (e) {
+    console.error('[Main] Failed to load Live2D runtime（Cubism Core 未加载？）:', e)
+    modelStatus.textContent = '模型加载失败'
+    showModelLoadError()
+  }
+
+  if (app) {
+    const live2d = app
+    try {
+      await live2d.init(canvas)
+      modelDot.classList.add('connected')
+      modelStatus.textContent = '模型已加载'
+      console.log('[Main] Live2D app initialized')
+      initDebugPanel(live2d)
+      initMouseFollow(live2d)
+      initClickInteraction(live2d)
+
+      hitareaToggle.addEventListener('change', () => {
+        live2d.showHitAreaOverlay(hitareaToggle.checked)
+      })
+    } catch (e) {
+      modelStatus.textContent = '模型加载失败'
+      showModelLoadError()
+      console.error('[Main] Failed to initialize Live2D:', e)
+      // 即使模型加载失败，legacy 路径仍尝试连接 WS（方便调试）
+    }
+  }
+
+  if (isElectron) {
+    // Electron 一体化默认路径：voice 事件由 main 经 preload IPC 推送（F3/F4），
+    // 表情/动作等视觉命令自 F5 起经 main↔renderer 命令通道执行（本片挂接）。
+    // 不连接遗留 WS；WS 缺席绝不允许阻断模型渲染与口型驱动（SPEC §10.3 降级要求）。
+    initVoiceLipSync(app)
+    initCommandChannel(app)
+    wsDot.classList.add('electron')
+    wsStatus.textContent = 'Electron 模式（voice + MCP 命令通道已接入）'
+    return
+  }
+
+  // 以下为 legacy 浏览器路径：连接独立 mcp-server 的 WS bridge（dev:legacy）
+  if (!app) {
+    // 渲染核心缺失（Cubism Core 未加载）：命令处理无从附着，不再连接 WS
+    wsStatus.textContent = '渲染核心未加载，未连接 WS'
+    return
+  }
+  const live2dApp = app
 
   // 初始化 WebSocket 客户端
   const wsClient = new WsClient()
 
   // 绑定命令处理器（包装一层，同时更新 UI）
-  const rawHandler = createCommandHandler(app)
+  const rawHandler = createCommandHandler(live2dApp)
   wsClient.setCommandHandler(async (command) => {
     const response = await rawHandler(command)
 
@@ -312,7 +603,7 @@ async function main() {
     wsStatus.textContent = 'WebSocket 已连接'
 
     // 发送就绪通知，携带模型信息
-    const modelInfo = app.getModelInfo()
+    const modelInfo = live2dApp.getModelInfo()
     if (modelInfo) {
       wsClient.sendReady(modelInfo)
     }

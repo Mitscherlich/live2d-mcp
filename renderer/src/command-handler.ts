@@ -5,28 +5,6 @@
 import type { Command, CommandResponse } from './ws-client.js'
 import type { Live2DApp } from './live2d-app.js'
 
-// --- 字幕管理 ---
-let subtitleTimer: ReturnType<typeof setTimeout> | null = null
-
-function showSubtitle(text: string, durationMs: number): void {
-  const bar = document.getElementById('subtitle-bar')
-  const textEl = document.getElementById('subtitle-text')
-  if (!bar || !textEl) return
-
-  if (subtitleTimer !== null) {
-    clearTimeout(subtitleTimer)
-    subtitleTimer = null
-  }
-
-  textEl.textContent = text
-  bar.classList.add('visible')
-
-  subtitleTimer = setTimeout(() => {
-    bar.classList.remove('visible')
-    subtitleTimer = null
-  }, durationMs + 500) // 多留 500ms 淡出
-}
-
 export function createCommandHandler(app: Live2DApp) {
   return async (command: Command): Promise<CommandResponse> => {
     const { requestId, type, params } = command
@@ -77,53 +55,6 @@ export function createCommandHandler(app: Live2DApp) {
         case 'getInfo': {
           const info = app.getModelInfo()
           return { requestId, success: true, data: info }
-        }
-
-        case 'startSpeak': {
-          const subtitleText = params.text as string | undefined
-          if (subtitleText) {
-            const duration = subtitleText.length * 200
-            showSubtitle(subtitleText, duration)
-          }
-          const ok = app.startSpeak()
-          return { requestId, success: ok }
-        }
-
-        case 'audioChunk': {
-          const audio = params.audio as string
-          const lipSyncData = (params.lipSyncData as Array<{ time: number; value: number }>) ?? []
-          const durationMs = (params.durationMs as number) ?? 2000
-          const ok = app.appendChunk(audio, lipSyncData, durationMs)
-          return { requestId, success: ok }
-        }
-
-        case 'endSpeak': {
-          const ok = app.endSpeak()
-          return { requestId, success: ok }
-        }
-
-        case 'startLipSyncOnly': {
-          const duration = params.duration as number
-          const emotion = params.emotion as string
-          const subtitleText = params.text as string | undefined
-          if (subtitleText) showSubtitle(subtitleText, duration)
-          const ok = app.startLipSyncOnly(duration, emotion)
-          return { requestId, success: ok }
-        }
-
-        case 'lipSync': {
-          const audioUrl = params.audioUrl as string | undefined
-          const audioBase64 = params.audioBase64 as string | undefined
-          const lipSyncData = params.lipSyncData as Array<{time: number, value: number}> | undefined
-          const subtitleText = params.text as string | undefined
-if (subtitleText) {
-            const duration = (lipSyncData && lipSyncData.length > 0)
-              ? lipSyncData[lipSyncData.length - 1].time
-              : subtitleText.length * 200  // 估算：每字约 200ms
-            showSubtitle(subtitleText, duration)
-          }
-          const ok = app.lipSync(audioUrl, audioBase64, lipSyncData)
-          return { requestId, success: ok }
         }
 
         default:

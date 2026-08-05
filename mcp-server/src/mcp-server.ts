@@ -11,7 +11,6 @@ import { registerExpressionTools } from './tools/expression.js'
 import { registerMotionTools } from './tools/motion.js'
 import { registerParameterTools } from './tools/parameter.js'
 import { registerQueryTools } from './tools/query.js'
-import { registerTTSTools } from './tools/tts.js'
 
 const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? '3000', 10)
 
@@ -26,7 +25,6 @@ function createServer(): McpServer {
   registerMotionTools(server)
   registerParameterTools(server)
   registerQueryTools(server)
-  registerTTSTools(server)
 
   return server
 }

@@ -1,14 +1,22 @@
 /**
  * Live2D 应用核心 - 基于 pixi-live2d-display
  *
- * 需要 Live2D Cubism Core 已通过 <script> 标签加载
+ * 需要 Live2D Cubism Core 已通过 <script> 标签加载。
+ * Electron CSP 禁用 unsafe-eval：用 @pixi/unsafe-eval 的 install 补丁，
+ * 避免 PIXI ShaderSystem 走 new Function。
  */
 
 import * as PIXI from 'pixi.js'
+import { install as installPixiUnsafeEval } from '@pixi/unsafe-eval'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
 
-// pixi-live2d-display 需要访问全局 PIXI
+// 必须在创建 PIXI.Application 之前 install
+installPixiUnsafeEval(PIXI)
+
+// pixi-live2d-display 需要访问全局 PIXI，并用同一 Ticker 驱动 autoUpdate
 ;(window as unknown as Record<string, unknown>).PIXI = PIXI
+// 注册 Application 使用的 Ticker 类，避免 shared/app ticker 不一致导致模型不刷新
+Live2DModel.registerTicker(PIXI.Ticker)
 
 export interface ModelInfo {
   expressions: string[]
@@ -33,6 +41,8 @@ export class Live2DApp {
   private hitAreaGraphics: PIXI.Graphics | null = null
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
+    // Electron 透明窗 + WebGL：需要 alpha 通道与 premultipliedAlpha，
+    // 并保留 drawing buffer 便于诊断；backgroundAlpha=0 适配透明窗体。
     this.app = new PIXI.Application({
       view: canvas,
       width: 600,
@@ -41,7 +51,14 @@ export class Live2DApp {
       antialias: true,
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
+      // 透明窗口下默认 clear 可能与合成器叠加异常；强制 RGBA clear
+      clearBeforeRender: true,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance',
     })
+
+    // 暴露诊断句柄（仅开发/排障）
+    ;(canvas as unknown as { __PIXI_APP?: PIXI.Application }).__PIXI_APP = this.app
 
     await this.loadModel()
   }
@@ -54,27 +71,75 @@ export class Live2DApp {
         autoInteract: false,  // 关闭自动鼠标交互，由 MCP 控制
       })
 
+      // 等待至少一帧，确保 mesh/bounds 就绪（部分 Core/显卡组合首次 width/height 为 0）
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve())
+      })
+      this.model.update(0)
+
+      const rawW = this.model.width || this.model.getBounds?.(true)?.width || 0
+      const rawH = this.model.height || this.model.getBounds?.(true)?.height || 0
+      // 部分环境下 getBounds 更可靠；若仍为 0，用合理默认防止 scale=Infinity/0
+      const modelW = rawW > 1 ? rawW : 1000
+      const modelH = rawH > 1 ? rawH : 1500
+
       this.model.anchor.set(0.5, 0.5)
       this.model.position.set(this.app.screen.width / 2, this.app.screen.height / 2)
 
       // 自适应缩放
-      const scale = Math.min(
-        this.app.screen.width / this.model.width,
-        this.app.screen.height / this.model.height
-      ) * 0.9
+      const scale =
+        Math.min(this.app.screen.width / modelW, this.app.screen.height / modelH) * 0.9
       this.model.scale.set(scale)
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       this.app.stage.addChild(this.model as any)
 
+      // 强制用 app.ticker 驱动模型更新（与渲染同一条 ticker，避免空白画布）
+      this.model.autoUpdate = false
+      this.app.ticker.add(() => {
+        if (!this.model) return
+        try {
+          this.model.update(this.app!.ticker.deltaMS)
+        } catch (err) {
+          // 单帧失败不炸掉 ticker；打一次日志
+          if (!(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged) {
+            ;(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged = true
+            console.error('[Live2D] model.update failed:', err)
+          }
+        }
+      })
+
+      // 播放默认 Idle，避免 T 姿势/静止不可见
+      try {
+        this.model.motion('Idle')
+      } catch {
+        /* Idle 不存在时忽略 */
+      }
+
       // 收集模型信息
       this.modelInfo = this.extractModelInfo()
 
-      console.log('[Live2D] Model loaded:', MODEL_PATH)
+      const bounds = this.model.getBounds(true)
+      console.log('[Live2D] Model loaded:', MODEL_PATH, {
+        screen: { w: this.app.screen.width, h: this.app.screen.height },
+        modelSize: { rawW, rawH, modelW, modelH },
+        scale,
+        pos: { x: this.model.position.x, y: this.model.position.y },
+        bounds: { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height },
+        paramCount: this.modelInfo?.parameters?.length ?? 0,
+        motions: this.modelInfo?.motionGroups,
+      })
       console.log('[Live2D] Model info:', this.modelInfo)
     } catch (e) {
       console.error('[Live2D] Failed to load model:', e)
-      document.getElementById('model-load-error')!.style.display = 'block'
+      const panel = document.getElementById('model-load-error')
+      if (panel) {
+        panel.style.display = 'block'
+        const detail = panel.querySelector('[data-error-detail]')
+        if (detail) {
+          detail.textContent = e instanceof Error ? e.message : String(e)
+        }
+      }
       throw e
     }
   }
@@ -99,24 +164,59 @@ export class Live2DApp {
       motionGroups[group] = Array.isArray(motions) ? motions.length : 0
     }
 
-    // 提取参数列表（从 Cubism Core）
+    // 提取参数列表：优先 Core parameters 表；否则从 model3 Groups / lipSyncIds 兜底
+    // （Cubism Core + Framework 组合下 coreModel.parameters 可能不可枚举）
     const parameters: ParameterInfo[] = []
+    const seen = new Set<string>()
+    const pushParam = (id: string, min = 0, max = 1, defaultValue = 0) => {
+      if (!id || seen.has(id)) return
+      seen.add(id)
+      parameters.push({ id, name: id, min, max, defaultValue })
+    }
     try {
-      const coreModel = (internalModel as unknown as { coreModel: { parameters: { count: number; ids: string[]; minimumValues: number[]; maximumValues: number[]; defaultValues: number[] } } }).coreModel
+      const coreModel = (
+        internalModel as unknown as {
+          coreModel?: {
+            parameters?: {
+              count: number
+              ids: ArrayLike<string>
+              minimumValues: ArrayLike<number>
+              maximumValues: ArrayLike<number>
+              defaultValues: ArrayLike<number>
+            }
+          }
+        }
+      ).coreModel
       const params = coreModel?.parameters
-      if (params) {
+      if (params && params.count > 0 && params.ids) {
         for (let i = 0; i < params.count; i++) {
-          parameters.push({
-            id: params.ids[i],
-            name: params.ids[i],
-            min: params.minimumValues[i],
-            max: params.maximumValues[i],
-            defaultValue: params.defaultValues[i],
-          })
+          pushParam(
+            String(params.ids[i]),
+            Number(params.minimumValues?.[i] ?? 0),
+            Number(params.maximumValues?.[i] ?? 1),
+            Number(params.defaultValues?.[i] ?? 0),
+          )
         }
       }
     } catch (e) {
-      console.warn('[Live2D] Could not extract parameters:', e)
+      console.warn('[Live2D] Could not extract parameters from coreModel:', e)
+    }
+    // Groups（LipSync / EyeBlink 等）
+    const groups =
+      (settings['Groups'] as Array<{ Name?: string; Ids?: string[] }> | undefined) ?? []
+    for (const g of groups) {
+      for (const id of g.Ids ?? []) pushParam(id)
+    }
+    // Framework lipSync / eyeBlink id 列表
+    try {
+      const im = internalModel as unknown as {
+        getLipSyncIds?: () => string[]
+        getEyeBlinkIds?: () => string[]
+      }
+      for (const id of im.getLipSyncIds?.() ?? []) pushParam(id)
+      for (const id of im.getEyeBlinkIds?.() ?? []) pushParam(id)
+    } catch {
+      /* ignore */
     }
 
     return { expressions, motionGroups, parameters }
@@ -182,6 +282,17 @@ export class Live2DApp {
       console.error('[Live2D] setParameter failed:', e)
       return false
     }
+  }
+
+  /**
+   * 注册每帧回调（ADR 0001 · F3 口型驱动）。
+   * UPDATE_PRIORITY.LOW：保证在 Live2D 模型自身的 update（motion 求解，NORMAL
+   * 优先级）之后执行——口型写入的 ParamMouthOpenY 不被本帧 motion 覆盖，
+   * 且在当帧渲染生效。deltaMS 为真实帧间隔毫秒（PIXI ticker.deltaMS）。
+   */
+  addTicker(fn: (deltaMS: number) => void): void {
+    if (!this.app) return
+    this.app.ticker.add(() => fn(this.app!.ticker.deltaMS), null, PIXI.UPDATE_PRIORITY.LOW)
   }
 
   // 重置
@@ -314,340 +425,5 @@ export class Live2DApp {
 
   isLoaded(): boolean {
     return this.model !== null
-  }
-
-  // ========== TTS + 口型同步功能 ==========
-
-  private speakingAudio: HTMLAudioElement | null = null
-  private lipSyncInterval: number | null = null
-  private lipSyncRaf: number | null = null
-  private audioContext: AudioContext | null = null
-  private isSpeaking = false
-
-  // 流式播放队列
-  private audioQueue: Array<{ audio: string; lipSyncData: Array<{ time: number; value: number }>; durationMs: number }> = []
-  private isPlayingQueue = false
-
-  /**
-   * 流式说话 - 初始化音频队列，准备接收 audioChunk
-   */
-  startSpeak(): boolean {
-    if (!this.model) return false
-    this.stopSpeaking()
-    this.audioQueue = []
-    this.isPlayingQueue = false
-    return true
-  }
-
-  /**
-   * 追加一段音频到播放队列，若队列空闲则立即开始播放
-   */
-  appendChunk(audio: string, lipSyncData: Array<{ time: number; value: number }>, durationMs = 2000): boolean {
-    if (!this.model) return false
-    this.audioQueue.push({ audio, lipSyncData, durationMs })
-    if (!this.isPlayingQueue) {
-      this.playNextInQueue()
-    }
-    return true
-  }
-
-  /**
-   * 标记流式说话结束（所有 chunk 已发送）
-   */
-  endSpeak(): boolean {
-    return true
-  }
-
-  /**
-   * 播放队列中的下一段音频
-   */
-  private playNextInQueue(): void {
-    // 取消上一段的口型 RAF
-    if (this.lipSyncRaf !== null) {
-      cancelAnimationFrame(this.lipSyncRaf)
-      this.lipSyncRaf = null
-    }
-
-    if (this.audioQueue.length === 0) {
-      this.isPlayingQueue = false
-      this.isSpeaking = false
-      this.setParameter('ParamMouthOpenY', 0)
-      return
-    }
-
-    this.isPlayingQueue = true
-    const { audio, lipSyncData, durationMs } = this.audioQueue.shift()!
-    const audioEl = new Audio(`data:audio/mpeg;base64,${audio}`)
-    this.speakingAudio = audioEl
-
-    audioEl.onplay = () => {
-      this.isSpeaking = true
-      if (lipSyncData && lipSyncData.length > 0) {
-        this.playLipSyncData(lipSyncData)
-      } else {
-        // 用服务端传来的时长估算，比 audioEl.duration 更可靠
-        this.startLipSyncAnimationWithDuration(durationMs)
-      }
-    }
-
-    audioEl.onended = () => {
-      this.playNextInQueue()
-    }
-
-    audioEl.play().catch((e) => {
-      console.error('[Live2D] queue play blocked:', e)
-      this.playNextInQueue()
-    })
-  }
-
-  /**
-   * 仅启动口型动画 - 用于配合外部 TTS
-   */
-  startLipSyncOnly(duration: number, emotion: string): boolean {
-    if (!this.model) return false
-
-    try {
-      // 停止之前的说话
-      this.stopSpeaking()
-
-      // 设置表情
-      this.setExpression(emotion)
-
-      // 启动口型动画，到期后停止说话状态
-      this.isSpeaking = true
-      this.startLipSyncAnimationWithDuration(duration)
-      setTimeout(() => { if (this.isSpeaking && !this.isPlayingQueue) this.stopSpeaking() }, duration + 100)
-
-      console.log('[Live2D] Lip sync only started, duration:', duration, 'ms')
-      return true
-    } catch (e) {
-      console.error('[Live2D] Start lip sync only failed:', e)
-      return false
-    }
-  }
-
-  /**
-   * 启动固定时长的口型动画
-   */
-  private startLipSyncAnimationWithDuration(durationMs: number): void {
-    if (this.lipSyncInterval) {
-      clearInterval(this.lipSyncInterval)
-    }
-
-    const startTime = Date.now()
-    const frameInterval = 50
-
-    this.lipSyncInterval = window.setInterval(() => {
-      const elapsed = Date.now() - startTime
-
-      if (elapsed >= durationMs) {
-        // 只停止口型动画，不清空播放队列（队列由 audio.onended 驱动）
-        clearInterval(this.lipSyncInterval!)
-        this.lipSyncInterval = null
-        this.setParameter('ParamMouthOpenY', 0)
-        return
-      }
-
-      // 使用正弦波叠加，模拟自然说话节奏
-      const progress = elapsed / durationMs
-      const mouthOpen = (
-        Math.abs(Math.sin(progress * Math.PI * 8)) * 0.5 +
-        Math.abs(Math.sin(progress * Math.PI * 13)) * 0.3 +
-        Math.abs(Math.sin(progress * Math.PI * 5)) * 0.2
-      ) * 0.8
-
-      this.setParameter('ParamMouthOpenY', mouthOpen)
-    }, frameInterval)
-  }
-
-  /**
-   * 口型同步 - 根据音频播放同步口型
-   */
-  lipSync(
-    audioUrl?: string,
-    audioBase64?: string,
-    lipSyncData?: Array<{ time: number; value: number }>
-  ): boolean {
-    if (!this.model) return false
-
-    try {
-      // 停止之前的说话
-      this.stopSpeaking()
-
-      // 播放音频，口型优先用时间轴，无时间轴则用音量分析
-      if (audioUrl || audioBase64) {
-        const audio = new Audio(audioBase64 ? `data:audio/mpeg;base64,${audioBase64}` : audioUrl)
-        audio.crossOrigin = 'anonymous'
-        this.speakingAudio = audio
-
-        audio.onplay = () => {
-          this.isSpeaking = true
-          if (lipSyncData && lipSyncData.length > 0) {
-            this.playLipSyncData(lipSyncData)
-          } else {
-            this.startAudioDrivenLipSync(audio)
-          }
-        }
-
-        audio.onended = () => {
-          this.stopSpeaking()
-        }
-
-        audio.play().catch((e) => {
-          console.error('[Live2D] audio.play() blocked:', e)
-        })
-        return true
-      }
-
-      return false
-    } catch (e) {
-      console.error('[Live2D] Lip sync failed:', e)
-      return false
-    }
-  }
-
-  /**
-   * Web Audio API 实时音量驱动口型
-   */
-  private startAudioDrivenLipSync(audio: HTMLAudioElement): void {
-    // 复用或新建 AudioContext
-    if (!this.audioContext) {
-      this.audioContext = new AudioContext()
-    }
-    const ctx = this.audioContext
-
-    const source = ctx.createMediaElementSource(audio)
-    const analyser = ctx.createAnalyser()
-    analyser.fftSize = 256
-    analyser.smoothingTimeConstant = 0.85  // 高平滑，让嘴型变化舒缓
-
-    source.connect(analyser)
-    analyser.connect(ctx.destination)
-
-    const dataArray = new Uint8Array(analyser.frequencyBinCount)
-    let currentMouth = 0
-
-    const tick = () => {
-      if (!this.isSpeaking) return
-
-      analyser.getByteFrequencyData(dataArray)
-
-      // 取低频段（语音主要能量区）的均值
-      const sliceEnd = Math.floor(dataArray.length * 0.25)
-      let sum = 0
-      for (let i = 0; i < sliceEnd; i++) sum += dataArray[i]
-      const avg = sum / sliceEnd  // 0 ~ 255
-
-      const target = Math.min(1, Math.pow(avg / 180, 0.7))
-
-      // 每帧缓动，0.12 约等于 100ms 内跟上目标值的 50%（60fps 下）
-      currentMouth += (target - currentMouth) * 0.12
-
-      this.setParameter('ParamMouthOpenY', currentMouth)
-      this.lipSyncRaf = requestAnimationFrame(tick)
-    }
-
-    this.lipSyncRaf = requestAnimationFrame(tick)
-  }
-
-  /**
-   * 停止说话
-   */
-  stopSpeaking(): void {
-    // 清空队列
-    this.audioQueue = []
-    this.isPlayingQueue = false
-
-    // 停止音频
-    if (this.speakingAudio) {
-      this.speakingAudio.pause()
-      this.speakingAudio = null
-    }
-
-    // 停止 RAF 口型循环
-    if (this.lipSyncRaf !== null) {
-      cancelAnimationFrame(this.lipSyncRaf)
-      this.lipSyncRaf = null
-    }
-
-    // 停止定时器口型循环（startLipSyncOnly 使用）
-    if (this.lipSyncInterval) {
-      clearInterval(this.lipSyncInterval)
-      this.lipSyncInterval = null
-    }
-
-    this.isSpeaking = false
-
-    // 嘴巴闭合
-    this.setParameter('ParamMouthOpenY', 0)
-
-    console.log('[Live2D] Speaking stopped')
-  }
-
-  /**
-   * 启动口型动画（模拟）
-   */
-  private startLipSyncAnimation(): void {
-    if (this.lipSyncInterval) {
-      clearInterval(this.lipSyncInterval)
-    }
-
-    // 模拟口型动画 - 使用正弦波模拟说话节奏
-    let time = 0
-    this.lipSyncInterval = window.setInterval(() => {
-      if (!this.isSpeaking) {
-        this.stopSpeaking()
-        return
-      }
-
-      time += 0.1
-      // 使用多个正弦波叠加，模拟自然说话的节奏
-      const mouthOpen = (
-        Math.abs(Math.sin(time * 8)) * 0.5 +
-        Math.abs(Math.sin(time * 13)) * 0.3 +
-        Math.abs(Math.sin(time * 5)) * 0.2
-      ) * 0.8
-
-      this.setParameter('ParamMouthOpenY', mouthOpen)
-    }, 50) // 每 50ms 更新一次
-  }
-
-  /**
-   * 播放预计算的口型数据（时间轴插值）
-   */
-  private playLipSyncData(lipSyncData: Array<{ time: number; value: number }>): void {
-    const startTime = Date.now()
-    const lastTime = lipSyncData[lipSyncData.length - 1].time
-
-    const updateLip = () => {
-      const elapsed = Date.now() - startTime
-
-      // 二分查找当前时间点对应的区间，线性插值
-      let value = 0
-      for (let i = lipSyncData.length - 1; i >= 0; i--) {
-        if (elapsed >= lipSyncData[i].time) {
-          if (i < lipSyncData.length - 1) {
-            const t0 = lipSyncData[i].time
-            const t1 = lipSyncData[i + 1].time
-            const alpha = (elapsed - t0) / (t1 - t0)
-            value = lipSyncData[i].value + (lipSyncData[i + 1].value - lipSyncData[i].value) * alpha
-          } else {
-            value = lipSyncData[i].value
-          }
-          break
-        }
-      }
-
-      this.setParameter('ParamMouthOpenY', Math.max(0, Math.min(1, value)))
-
-      if (elapsed < lastTime + 100) {
-        this.lipSyncRaf = requestAnimationFrame(updateLip)
-      } else {
-        this.setParameter('ParamMouthOpenY', 0)
-        this.lipSyncRaf = null
-      }
-    }
-
-    this.lipSyncRaf = requestAnimationFrame(updateLip)
   }
 }
