@@ -148,6 +148,7 @@
         transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
         -webkit-app-region: no-drag;
         user-select: none;
+        z-index: 60;
       }
 
       #button-group.visible {
@@ -218,6 +219,22 @@
         color: rgba(255, 255, 255, 0.9);
         font-size: 10px;
         white-space: nowrap;
+      }
+
+      /* ADR 0002 S3：锁定穿透时由 forwarded mousemove 触发恢复的不可见顶部热区。 */
+      #lock-hotspot {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 40px;
+        z-index: 55;
+        pointer-events: none;
+        -webkit-app-region: no-drag;
+      }
+
+      #lock-hotspot.locked {
+        pointer-events: auto;
       }
 
       #canvas-container,
@@ -476,6 +493,7 @@
   <body>
     <!-- Electron 无工具条时用于拖动 frameless 窗口 -->
     <div id="window-drag-region">
+      <div id="lock-hotspot" aria-hidden="true"></div>
       <div id="button-group" role="toolbar" aria-label="窗口控制" aria-hidden="true">
         <button type="button" data-action="drag" aria-label="拖动窗口" aria-pressed="false" title="拖动窗口">
           <svg viewBox="0 0 24 24" aria-hidden="true">

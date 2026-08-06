@@ -1,5 +1,7 @@
 export const BUTTON_HOTSPOT_HEIGHT = 48
+export const LOCK_HOTSPOT_HEIGHT = 40
 export const BUTTON_GROUP_HIDE_DELAY = 800
+export const MOUSE_IGNORE_DEBOUNCE_MS = 100
 
 export interface ButtonGroupSnapshot {
   visible: boolean
@@ -7,6 +9,7 @@ export interface ButtonGroupSnapshot {
   scaling: boolean
   locked: boolean
   inHotspot: boolean
+  lockHotspotActive: boolean
 }
 
 export interface ButtonGroupController {
@@ -21,6 +24,8 @@ export interface ButtonGroupController {
   isScaling(): boolean
   setHotspotActive(active: boolean): void
   isHotspotActive(): boolean
+  setLockHotspotActive(active: boolean): void
+  isLockHotspotActive(): boolean
   onHotspotChange(callback: (active: boolean) => void): () => void
   containsTarget(target: EventTarget | null): boolean
   destroy(): void
@@ -30,6 +35,7 @@ interface ButtonGroupStateOptions {
   hideDelayMs?: number
   schedule?: (callback: () => void, delayMs: number) => unknown
   cancel?: (handle: unknown) => void
+  mouseIgnoreDebounceMs?: number
   onStateChange?: (snapshot: ButtonGroupSnapshot) => void
   onMouseIgnoreChange?: (ignore: boolean) => void
 }
@@ -46,6 +52,7 @@ export function createButtonGroupState(
   options: ButtonGroupStateOptions = {},
 ): ButtonGroupController {
   const hideDelayMs = options.hideDelayMs ?? BUTTON_GROUP_HIDE_DELAY
+  const mouseIgnoreDebounceMs = options.mouseIgnoreDebounceMs ?? MOUSE_IGNORE_DEBOUNCE_MS
   const schedule = options.schedule ?? ((callback, delayMs) => globalThis.setTimeout(callback, delayMs))
   const cancel = options.cancel ?? ((handle) => {
     globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>)
@@ -57,14 +64,43 @@ export function createButtonGroupState(
     scaling: false,
     locked: false,
     inHotspot: false,
+    lockHotspotActive: false,
   }
   const hotspotListeners = new Set<(active: boolean) => void>()
   let hideTimer: unknown = null
+  let mouseIgnoreTimer: unknown = null
+  let mouseIgnored = false
 
   const clearHideTimer = () => {
     if (hideTimer === null) return
     cancel(hideTimer)
     hideTimer = null
+  }
+
+  const clearMouseIgnoreTimer = () => {
+    if (mouseIgnoreTimer === null) return
+    cancel(mouseIgnoreTimer)
+    mouseIgnoreTimer = null
+  }
+
+  const applyMouseIgnore = (ignore: boolean) => {
+    clearMouseIgnoreTimer()
+    if (mouseIgnored === ignore) return
+    mouseIgnored = ignore
+    options.onMouseIgnoreChange?.(ignore)
+  }
+
+  const scheduleMouseIgnore = (ignore: boolean) => {
+    clearMouseIgnoreTimer()
+    if (mouseIgnored === ignore) return
+    if (mouseIgnoreDebounceMs <= 0) {
+      applyMouseIgnore(ignore)
+      return
+    }
+    mouseIgnoreTimer = schedule(() => {
+      mouseIgnoreTimer = null
+      applyMouseIgnore(ignore)
+    }, mouseIgnoreDebounceMs)
   }
 
   const isActive = () => state.dragging || state.scaling || state.locked
@@ -115,6 +151,7 @@ export function createButtonGroupState(
       return
     }
     state.locked = locked
+    state.lockHotspotActive = false
     if (locked) {
       state.dragging = false
       state.scaling = false
@@ -122,7 +159,18 @@ export function createButtonGroupState(
     } else {
       scheduleHide()
     }
-    options.onMouseIgnoreChange?.(locked)
+    // 锁定/解锁是明确的用户动作，立即切换；只有热区 hover 才走防抖路径。
+    applyMouseIgnore(locked)
+    notify()
+  }
+
+  const setLockHotspotActive = (active: boolean) => {
+    if (state.lockHotspotActive === active) return
+    state.lockHotspotActive = active
+    if (state.locked) {
+      scheduleMouseIgnore(!active)
+      if (active) show()
+    }
     notify()
   }
 
@@ -170,6 +218,8 @@ export function createButtonGroupState(
     isScaling: () => state.scaling,
     setHotspotActive,
     isHotspotActive: () => state.inHotspot,
+    setLockHotspotActive,
+    isLockHotspotActive: () => state.lockHotspotActive,
     onHotspotChange(callback) {
       hotspotListeners.add(callback)
       return () => hotspotListeners.delete(callback)
@@ -177,6 +227,7 @@ export function createButtonGroupState(
     containsTarget: () => false,
     destroy() {
       clearHideTimer()
+      clearMouseIgnoreTimer()
       hotspotListeners.clear()
     },
   }
@@ -186,10 +237,19 @@ interface ButtonGroupInitOptions {
   document?: Document
   window?: Window
   hideDelayMs?: number
+  mouseIgnoreDebounceMs?: number
 }
 
 function isTopHotspot(event: { clientY: number }, height: number): boolean {
   return Number.isFinite(event.clientY) && event.clientY >= 0 && event.clientY <= height
+}
+
+export function isUnlockShortcut(
+  event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'shiftKey' | 'key'>,
+  platform: string,
+): boolean {
+  const modifier = platform === 'darwin' ? event.metaKey : event.ctrlKey
+  return modifier && event.shiftKey && event.key.toLowerCase() === 'l'
 }
 
 /** 初始化 DOM、hover 热区、四个按钮与 Electron 窄 API。 */
@@ -213,6 +273,7 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
     return null
   }
   const lockStatus = group.querySelector<HTMLElement>('[data-lock-status]')
+  const lockHotspot = documentRef.getElementById('lock-hotspot')
   const api = windowRef.live2d
 
   const invokeMouseIgnore = (ignore: boolean) => {
@@ -227,10 +288,12 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
 
   const controller = createButtonGroupState({
     hideDelayMs: options.hideDelayMs,
+    mouseIgnoreDebounceMs: options.mouseIgnoreDebounceMs,
     onMouseIgnoreChange: invokeMouseIgnore,
     onStateChange(snapshot) {
       group.classList.toggle('visible', snapshot.visible)
       group.classList.toggle('locked', snapshot.locked)
+      lockHotspot?.classList.toggle('locked', snapshot.locked)
       group.setAttribute('aria-hidden', String(!snapshot.visible))
       dragButton.classList.toggle('active', snapshot.dragging)
       scaleButton.classList.toggle('active', snapshot.scaling)
@@ -242,20 +305,26 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
     },
   })
 
-  const onPointerMove = (event: PointerEvent) => {
+  const onPointerMove = (event: MouseEvent) => {
     controller.setHotspotActive(isTopHotspot(event, BUTTON_HOTSPOT_HEIGHT))
+    controller.setLockHotspotActive(isTopHotspot(event, LOCK_HOTSPOT_HEIGHT))
   }
-  const onPointerLeave = () => controller.setHotspotActive(false)
+  const onPointerLeave = () => {
+    controller.setHotspotActive(false)
+    controller.setLockHotspotActive(false)
+  }
   const onKeyDown = (event: KeyboardEvent) => {
-    const modifier = api?.platform === 'darwin' ? event.metaKey : event.ctrlKey
-    if (!modifier || !event.shiftKey || event.key.toLowerCase() !== 'l') return
-    if (!controller.isLocked()) return
+    if (!isUnlockShortcut(event, api?.platform ?? 'web') || !controller.isLocked()) return
     event.preventDefault()
     controller.setLocked(false)
   }
 
   windowRef.addEventListener('pointermove', onPointerMove)
+  // Electron 在 setIgnoreMouseEvents(true, { forward: true }) 时保证转发 mousemove，
+  // 但不保证 pointermove；两者都监听才能在穿透态发现顶部热区。
+  windowRef.addEventListener('mousemove', onPointerMove)
   windowRef.addEventListener('pointerleave', onPointerLeave)
+  windowRef.addEventListener('mouseleave', onPointerLeave)
   windowRef.addEventListener('keydown', onKeyDown)
 
   dragButton.addEventListener('click', () => controller.setDragging(!controller.isDragging()))
@@ -274,7 +343,9 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
   const originalDestroy = controller.destroy
   controller.destroy = () => {
     windowRef.removeEventListener('pointermove', onPointerMove)
+    windowRef.removeEventListener('mousemove', onPointerMove)
     windowRef.removeEventListener('pointerleave', onPointerLeave)
+    windowRef.removeEventListener('mouseleave', onPointerLeave)
     windowRef.removeEventListener('keydown', onKeyDown)
     originalDestroy()
   }
@@ -284,6 +355,7 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
   // 初始隐藏状态也要同步到 DOM。
   group.classList.remove('visible', 'locked')
   group.setAttribute('aria-hidden', 'true')
+  lockHotspot?.classList.remove('locked')
   lockStatus?.setAttribute('hidden', '')
   return controller
 }
