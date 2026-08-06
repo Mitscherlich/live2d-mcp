@@ -5,7 +5,7 @@
  *
  * F7 新增职责：
  *  - 系统托盘提供显示/隐藏角色窗、打开设置与退出；关闭角色窗改为隐藏，托盘保活；
- *  - userData/settings.json 持久化 voice source，写入复用 F6 sanitize；
+ *  - userData/settings.json 持久化 voice source 与角色窗状态，写入复用 sanitize；
  *  - 最小设置窗展示实际 MCP URL / codex 命令并热更新 listener。
  *
  * F6 新增职责：
@@ -71,7 +71,11 @@ const { createLive2dMcpHandler } = require('./mcp-server.cjs')
 const { resolveVoiceSourceConfig } = require('./voice-source.cjs')
 const { createAudioListener } = require('./audio-listener.cjs')
 const { buildListenerSummary } = require('./listener-status.cjs')
-const { createSettingsStore, defaultSettings } = require('./settings-store.cjs')
+const {
+  DEFAULT_WINDOW_STATE,
+  createSettingsStore,
+  defaultSettings,
+} = require('./settings-store.cjs')
 const { buildSettingsViewModel } = require('./settings-view.cjs')
 const {
   SETTINGS_GET_CHANNEL,
@@ -85,8 +89,8 @@ const {
 } = require('./tray.cjs')
 const { createWindowInteractionController } = require('./window-interactions.cjs')
 
-const WINDOW_WIDTH = 600
-const WINDOW_HEIGHT = 640
+const WINDOW_WIDTH = DEFAULT_WINDOW_STATE.width
+const WINDOW_HEIGHT = DEFAULT_WINDOW_STATE.height
 const WINDOW_MARGIN = 24
 const SETTINGS_WIDTH = 560
 const SETTINGS_HEIGHT = 700
@@ -149,12 +153,35 @@ let avatarWindow = null
 let settingsWindow = null
 let tray = null
 let isQuitting = false
+let settingsStore = null
+let persistedSettings = defaultSettings()
+
+function currentAvatarWindowState() {
+  if (!avatarWindow || avatarWindow.isDestroyed()) return null
+  return {
+    ...avatarWindow.getBounds(),
+    scale: windowInteractionController.getWindowScale(),
+  }
+}
+
+function persistWindowState(state = currentAvatarWindowState()) {
+  if (!settingsStore || !state) return
+  try {
+    persistedSettings = settingsStore.save({
+      ...persistedSettings,
+      window: state,
+    })
+  } catch (error) {
+    console.error(`[live2d] 窗口状态保存失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+}
 
 const windowInteractionController = createWindowInteractionController({
   ipcMain,
   screen,
   getWindow: () => avatarWindow,
   openSettings: () => createSettingsWindow(),
+  onWindowStateChange: (state) => persistWindowState(state),
 })
 
 // ---------------------------------------------------- F5 main↔renderer 命令通道
@@ -175,8 +202,6 @@ function sendRendererCommand(type, params) {
 
 // -------------------------------------------------------- F6/F7 voice settings
 
-let settingsStore = null
-let persistedSettings = defaultSettings()
 let voiceSourceConfig = resolveVoiceSourceConfig(process.env, persistedSettings.voiceSource)
 let audioListener = null
 let nativeListenerStatus = null
@@ -349,9 +374,10 @@ function createWindow() {
   if (avatarWindow && !avatarWindow.isDestroyed()) return avatarWindow
 
   const url = rendererUrl()
+  const savedWindow = persistedSettings.window ?? DEFAULT_WINDOW_STATE
   const win = new BrowserWindow({
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
+    width: savedWindow.width,
+    height: savedWindow.height,
     minWidth: 360,
     minHeight: 480,
     show: false,
@@ -376,14 +402,20 @@ function createWindow() {
     },
   })
   avatarWindow = win
+  const restoredWindow = windowInteractionController.restoreWindowState(win, savedWindow)
   windowInteractionController.startGlobalMouseTracking(win)
+  const persist = () => persistWindowState()
+  win.on('move', persist)
+  win.on('resize', persist)
 
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
   win.once('ready-to-show', () => {
     if (win.isDestroyed()) return
-    positionWindow(win)
+    if (!restoredWindow.positionRestored) positionWindow(win)
+    windowInteractionController.syncWindowScale(win)
+    persistWindowState()
     win.show()
     console.log(`[live2d] 角色窗已显示（${isDev ? 'dev' : 'prod'}: ${url}）`)
   })
@@ -445,6 +477,19 @@ function hideAvatarWindow() {
   if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide()
 }
 
+/** 托盘「重置窗口位置」：恢复右下角默认 bounds 与 100% 缩放并写回设置。 */
+function resetAvatarWindow() {
+  const win = createWindow()
+  if (win.isDestroyed()) return null
+  win.setSize(WINDOW_WIDTH, WINDOW_HEIGHT, false)
+  windowInteractionController.setWindowScale(DEFAULT_WINDOW_STATE.scale, {
+    notifyRenderer: true,
+  })
+  positionWindow(win)
+  persistWindowState()
+  return win
+}
+
 /** 角色窗当前是否可见（/health 与 MCP get_status 共用，避免两处各写一份判断） */
 function avatarWindowVisible() {
   return Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible())
@@ -496,6 +541,7 @@ function createAppTray() {
     actions: {
       showAvatar: () => showAvatarWindow(),
       hideAvatar: () => hideAvatarWindow(),
+      resetAvatar: () => resetAvatarWindow(),
       openSettings: () => createSettingsWindow(),
       quitApp: () => {
         isQuitting = true
@@ -531,7 +577,7 @@ function registerIpcHandlers() {
     if (!isSettingsSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
     if (!settingsStore) return { ok: false, error: '设置存储尚未就绪' }
     try {
-      persistedSettings = settingsStore.save({ voiceSource })
+      persistedSettings = settingsStore.save({ ...persistedSettings, voiceSource })
       const message = applyPersistedVoiceSource()
       return { ok: true, view: settingsViewModel(message) }
     } catch (error) {
@@ -586,6 +632,7 @@ if (!gotSingleInstanceLock) {
     })
     const loadedSettings = settingsStore.load()
     persistedSettings = loadedSettings.settings
+    windowInteractionController.setWindowScale(persistedSettings.window.scale, { notify: false })
     voiceSourceConfig = resolveVoiceSourceConfig(process.env, persistedSettings.voiceSource)
     for (const warning of loadedSettings.warnings) console.warn(`[live2d] ${warning}`)
     console.log(`[live2d] 启动模式: ${isDev ? `dev（${DEV_SERVER_URL}）` : 'prod（renderer/dist）'}`)
@@ -740,6 +787,7 @@ async function startBridge() {
 
 app.on('before-quit', () => {
   isQuitting = true
+  persistWindowState()
 })
 
 app.on('will-quit', () => {

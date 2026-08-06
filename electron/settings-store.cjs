@@ -10,11 +10,54 @@ const path = require('node:path')
 const { DEFAULT_VOICE_SOURCE, sanitizeVoiceSource } = require('./voice-source.cjs')
 
 const SETTINGS_VERSION = 1
+const MIN_WINDOW_WIDTH = 360
+const MAX_WINDOW_WIDTH = 4096
+const MIN_WINDOW_HEIGHT = 480
+const MAX_WINDOW_HEIGHT = 4096
+const MIN_WINDOW_SCALE = 0.5
+const MAX_WINDOW_SCALE = 1.75
+
+const DEFAULT_WINDOW_STATE = Object.freeze({
+  x: null,
+  y: null,
+  width: 600,
+  height: 640,
+  scale: 1,
+})
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function sanitizePosition(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null
+}
+
+function sanitizeDimension(value, fallback, min, max) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return clamp(Math.round(value), min, max)
+}
+
+function sanitizeScale(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_WINDOW_STATE.scale
+  return Math.round(clamp(value, MIN_WINDOW_SCALE, MAX_WINDOW_SCALE) * 100) / 100
+}
+
+function sanitizeWindowState(value) {
+  return {
+    x: sanitizePosition(value?.x),
+    y: sanitizePosition(value?.y),
+    width: sanitizeDimension(value?.width, DEFAULT_WINDOW_STATE.width, MIN_WINDOW_WIDTH, MAX_WINDOW_WIDTH),
+    height: sanitizeDimension(value?.height, DEFAULT_WINDOW_STATE.height, MIN_WINDOW_HEIGHT, MAX_WINDOW_HEIGHT),
+    scale: sanitizeScale(value?.scale),
+  }
+}
 
 function defaultSettings() {
   return {
     version: SETTINGS_VERSION,
     voiceSource: { ...DEFAULT_VOICE_SOURCE },
+    window: { ...DEFAULT_WINDOW_STATE },
   }
 }
 
@@ -22,6 +65,7 @@ function sanitizeSettings(value) {
   return {
     version: SETTINGS_VERSION,
     voiceSource: sanitizeVoiceSource(value?.voiceSource),
+    window: sanitizeWindowState(value?.window),
   }
 }
 
@@ -61,8 +105,16 @@ function createSettingsStore({ filePath }) {
 }
 
 module.exports = {
+  DEFAULT_WINDOW_STATE,
+  MAX_WINDOW_HEIGHT,
+  MAX_WINDOW_SCALE,
+  MAX_WINDOW_WIDTH,
+  MIN_WINDOW_HEIGHT,
+  MIN_WINDOW_SCALE,
+  MIN_WINDOW_WIDTH,
   SETTINGS_VERSION,
   createSettingsStore,
   defaultSettings,
+  sanitizeWindowState,
   sanitizeSettings,
 }

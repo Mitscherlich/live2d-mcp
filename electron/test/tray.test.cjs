@@ -13,6 +13,7 @@ test('托盘菜单将显示、隐藏、设置与退出动作接到对应回调',
   const template = buildTrayMenuTemplate({
     showAvatar: () => calls.push('show'),
     hideAvatar: () => calls.push('hide'),
+    resetAvatar: () => calls.push('reset'),
     openSettings: () => calls.push('settings'),
     quitApp: () => calls.push('quit'),
   })
@@ -21,11 +22,12 @@ test('托盘菜单将显示、隐藏、设置与退出动作接到对应回调',
   assert.deepEqual(actionable.map((item) => item.label), [
     '显示角色窗',
     '隐藏角色窗',
+    '重置窗口位置',
     '打开设置',
     '退出',
   ])
   for (const item of actionable) item.click()
-  assert.deepEqual(calls, ['show', 'hide', 'settings', 'quit'])
+  assert.deepEqual(calls, ['show', 'hide', 'reset', 'settings', 'quit'])
 })
 
 test('有可用托盘时 window-all-closed 保活；无托盘时退出', () => {
@@ -55,7 +57,7 @@ test('托盘控制器使用内置图标并在 macOS 标记为模板图', () => {
   }
   const menu = { marker: true }
   const actions = {
-    showAvatar() {}, hideAvatar() {}, openSettings() {}, quitApp() {},
+    showAvatar() {}, hideAvatar() {}, resetAvatar() {}, openSettings() {}, quitApp() {},
   }
   const tray = createTrayController({
     Tray: FakeTray,

@@ -40,6 +40,7 @@ function createFakeWindow(bounds = { x: 100, y: 80, width: 600, height: 640 }) {
   win.bounds = { ...bounds }
   win.destroyed = false
   win.positions = []
+  win.sizes = []
   win.sent = []
   win.ignoreCalls = []
   win.webContents = {
@@ -54,13 +55,18 @@ function createFakeWindow(bounds = { x: 100, y: 80, width: 600, height: 640 }) {
     win.bounds.x = x
     win.bounds.y = y
   }
+  win.setSize = (width, height, animate) => {
+    win.sizes.push({ width, height, animate })
+    win.bounds.width = width
+    win.bounds.height = height
+  }
   win.setIgnoreMouseEvents = (ignore, options) => {
     win.ignoreCalls.push({ ignore, options })
   }
   return win
 }
 
-function setup() {
+function setup({ onWindowStateChange = () => {} } = {}) {
   const ipcMain = createFakeIpcMain()
   const win = createFakeWindow()
   const settingsOpened = []
@@ -82,6 +88,7 @@ function setup() {
     openSettings() {
       settingsOpened.push(true)
     },
+    onWindowStateChange,
     setIntervalFn(callback, delay) {
       const token = { callback, delay }
       intervals.push(token)
@@ -174,6 +181,50 @@ test('窗口缩放在 main 权威钳制到 0.5-1.75，并通过事件回推 rend
     () => ipcMain.invoke(SET_WINDOW_SCALE_CHANNEL, event, Number.POSITIVE_INFINITY),
     /缩放值非法/,
   )
+})
+
+test('恢复窗口状态时应用尺寸、80x40px snap 和持久化缩放，且不产生中间保存', () => {
+  const changes = []
+  const { controller, win } = setup({
+    onWindowStateChange: (state) => changes.push(state),
+  })
+
+  assert.deepEqual(
+    controller.restoreWindowState(win, {
+      x: -5000,
+      y: 5000,
+      width: 700,
+      height: 600,
+      scale: 1.4,
+    }),
+    {
+      x: -620,
+      y: 760,
+      width: 700,
+      height: 600,
+      scale: 1.4,
+      positionRestored: true,
+    },
+  )
+  assert.deepEqual(win.sizes, [{ width: 700, height: 600, animate: false }])
+  assert.equal(controller.getWindowScale(), 1.4)
+  assert.deepEqual(changes, [])
+
+  assert.equal(controller.syncWindowScale(win), true)
+  assert.deepEqual(win.sent.at(-1), { channel: SET_SCALE_EVENT_CHANNEL, payload: 1.4 })
+})
+
+test('移动和缩放实时发出完整窗口状态快照供 settings-store 保存', () => {
+  const changes = []
+  const { ipcMain, event, controller } = setup({
+    onWindowStateChange: (state) => changes.push(state),
+  })
+
+  ipcMain.invoke(MOVE_WINDOW_CHANNEL, event, { deltaX: 20, deltaY: 30 })
+  assert.deepEqual(changes.at(-1), { x: 120, y: 110, width: 600, height: 640, scale: 1 })
+
+  controller.setWindowScale(1.25)
+  assert.deepEqual(changes.at(-1), { x: 120, y: 110, width: 600, height: 640, scale: 1.25 })
 })
 
 test('set-mouse-ignore 只接受布尔值，并始终以 forward=true 切换角色窗穿透', () => {

@@ -7,6 +7,8 @@
  * 模块不直接 require Electron，便于用 fake ipcMain / BrowserWindow 真实覆盖每个端点。
  */
 
+const { sanitizeWindowState } = require('./settings-store.cjs')
+
 const MOVE_WINDOW_CHANNEL = 'live2d:move-window'
 const GET_WINDOW_BOUNDS_CHANNEL = 'live2d:get-window-bounds'
 const GET_WINDOW_SCALE_CHANNEL = 'live2d:get-window-scale'
@@ -75,6 +77,7 @@ function createWindowInteractionController({
   screen,
   getWindow,
   openSettings = () => {},
+  onWindowStateChange = () => {},
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
 } = {}) {
@@ -84,10 +87,25 @@ function createWindowInteractionController({
   }
   if (typeof getWindow !== 'function') throw new TypeError('getWindow 必填')
   if (typeof openSettings !== 'function') throw new TypeError('openSettings 必须是函数')
+  if (typeof onWindowStateChange !== 'function') {
+    throw new TypeError('onWindowStateChange 必须是函数')
+  }
 
   const trackers = new Map()
   let registered = false
   let windowScale = DEFAULT_WINDOW_SCALE
+
+  function getWindowState(win) {
+    return {
+      ...normalizeBounds(win.getBounds()),
+      scale: windowScale,
+    }
+  }
+
+  function notifyWindowState(win) {
+    if (!win || win.isDestroyed()) return
+    onWindowStateChange(getWindowState(win))
+  }
 
   function requireAvatarSender(event) {
     const win = getWindow()
@@ -119,6 +137,7 @@ function createWindowInteractionController({
         screen,
       )
       win.setPosition(next.x, next.y, false)
+      notifyWindowState(win)
       return { ...next, width: bounds.width, height: bounds.height }
     },
     [GET_WINDOW_SCALE_CHANNEL]: (event) => {
@@ -127,8 +146,9 @@ function createWindowInteractionController({
     },
     [SET_WINDOW_SCALE_CHANNEL]: (event, rawScale) => {
       const win = requireAvatarSender(event)
-      windowScale = normalizeScale(rawScale)
+      windowScale = setWindowScale(rawScale, { notify: false })
       win.webContents.send(SET_SCALE_EVENT_CHANNEL, windowScale)
+      notifyWindowState(win)
       return windowScale
     },
     [SET_MOUSE_IGNORE_CHANNEL]: (event, payload) => {
@@ -181,6 +201,47 @@ function createWindowInteractionController({
     return stop
   }
 
+  function setWindowScale(rawScale, { notify = true, notifyRenderer = false } = {}) {
+    windowScale = normalizeScale(rawScale)
+    const win = getWindow()
+    if (notifyRenderer && win && !win.isDestroyed()) {
+      win.webContents.send(SET_SCALE_EVENT_CHANNEL, windowScale)
+    }
+    if (notify) notifyWindowState(win)
+    return windowScale
+  }
+
+  function restoreWindowState(win, rawState) {
+    if (!win || win.isDestroyed()) throw new Error('窗口状态恢复目标非法')
+    const state = sanitizeWindowState(rawState)
+    const currentBounds = normalizeBounds(win.getBounds())
+    if (
+      typeof win.setSize === 'function' &&
+      (currentBounds.width !== state.width || currentBounds.height !== state.height)
+    ) {
+      win.setSize(state.width, state.height, false)
+    }
+
+    const bounds = normalizeBounds(win.getBounds())
+    const positionRestored = Number.isFinite(state.x) && Number.isFinite(state.y)
+    if (positionRestored) {
+      const next = snapWindowPosition(bounds, { x: state.x, y: state.y }, screen)
+      win.setPosition(next.x, next.y, false)
+    }
+    setWindowScale(state.scale, { notify: false })
+    return {
+      ...normalizeBounds(win.getBounds()),
+      scale: windowScale,
+      positionRestored,
+    }
+  }
+
+  function syncWindowScale(win = getWindow()) {
+    if (!win || win.isDestroyed()) return false
+    win.webContents.send(SET_SCALE_EVENT_CHANNEL, windowScale)
+    return true
+  }
+
   function dispose() {
     for (const stop of [...trackers.values()]) stop()
     if (!registered) return
@@ -188,7 +249,15 @@ function createWindowInteractionController({
     registered = false
   }
 
-  return { register, startGlobalMouseTracking, dispose }
+  return {
+    getWindowScale: () => windowScale,
+    register,
+    restoreWindowState,
+    setWindowScale,
+    startGlobalMouseTracking,
+    syncWindowScale,
+    dispose,
+  }
 }
 
 module.exports = {
