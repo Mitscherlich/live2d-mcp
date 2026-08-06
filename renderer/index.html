@@ -35,6 +35,8 @@
         position: relative;
         width: 600px;
         height: 600px;
+        transform-origin: center center;
+        transition: transform 0.1s ease-out;
       }
 
       canvas {
@@ -110,7 +112,7 @@
         display: none !important;
       }
 
-      /* 无工具条时的隐形拖拽条（frameless 窗仍可移动） */
+      /* S1 起统一由 Command/Ctrl + DOM pointer 处理拖动；保留节点只为兼容既有 DOM。 */
       #window-drag-region {
         display: none;
         position: fixed;
@@ -119,7 +121,8 @@
         right: 0;
         height: 32px;
         z-index: 50;
-        -webkit-app-region: drag;
+        -webkit-app-region: no-drag;
+        pointer-events: none;
       }
       html.electron-mode:not(.ui-chrome) #window-drag-region,
       body.electron-mode:not(.ui-chrome) #window-drag-region {

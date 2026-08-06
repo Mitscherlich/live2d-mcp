@@ -32,6 +32,13 @@ const VOICE_INJECT_ARG = '--live2d-voice-inject'
 const COMMAND_CHANNEL = 'live2d:command'
 const COMMAND_RESULT_CHANNEL = 'live2d:command-result'
 const COMMAND_READY_CHANNEL = 'live2d:command-ready'
+// ADR 0002 · S1 窗口交互（sandbox preload 不能 require 本仓模块，测试校验两侧一致）
+const MOVE_WINDOW_CHANNEL = 'live2d:move-window'
+const GET_WINDOW_BOUNDS_CHANNEL = 'live2d:get-window-bounds'
+const GET_WINDOW_SCALE_CHANNEL = 'live2d:get-window-scale'
+const SET_WINDOW_SCALE_CHANNEL = 'live2d:set-window-scale'
+const GLOBAL_MOUSE_MOVE_CHANNEL = 'live2d:global-mouse-move'
+const SET_SCALE_EVENT_CHANNEL = 'live2d:set-scale'
 const COMMAND_TYPES = new Set([
   'getModelInfo',
   'setExpression',
@@ -62,6 +69,10 @@ function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
 /** 浅校验：main → renderer 命令帧（requestId + type 白名单 + params 对象） */
 function isCommandFrameShape(raw) {
   return (
@@ -83,6 +94,46 @@ const api = {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
     node: process.versions.node,
+  },
+
+  async moveWindow(deltaX, deltaY) {
+    if (!isFiniteNumber(deltaX) || !isFiniteNumber(deltaY)) {
+      throw new TypeError('窗口移动增量必须是有限数')
+    }
+    return ipcRenderer.invoke(MOVE_WINDOW_CHANNEL, { deltaX, deltaY })
+  },
+
+  getWindowBounds() {
+    return ipcRenderer.invoke(GET_WINDOW_BOUNDS_CHANNEL)
+  },
+
+  getWindowScale() {
+    return ipcRenderer.invoke(GET_WINDOW_SCALE_CHANNEL)
+  },
+
+  async setWindowScale(scale) {
+    if (!isFiniteNumber(scale)) throw new TypeError('窗口缩放值必须是有限数')
+    return ipcRenderer.invoke(SET_WINDOW_SCALE_CHANNEL, scale)
+  },
+
+  onGlobalMouseMove(callback) {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_event, point) => {
+      if (isPlainObject(point) && isFiniteNumber(point.x) && isFiniteNumber(point.y)) {
+        callback(point.x, point.y)
+      }
+    }
+    ipcRenderer.on(GLOBAL_MOUSE_MOVE_CHANNEL, listener)
+    return () => ipcRenderer.removeListener(GLOBAL_MOUSE_MOVE_CHANNEL, listener)
+  },
+
+  onSetScale(callback) {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_event, scale) => {
+      if (isFiniteNumber(scale) && scale >= 0.5 && scale <= 1.75) callback(scale)
+    }
+    ipcRenderer.on(SET_SCALE_EVENT_CHANNEL, listener)
+    return () => ipcRenderer.removeListener(SET_SCALE_EVENT_CHANNEL, listener)
   },
 
   /**

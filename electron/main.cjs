@@ -83,6 +83,7 @@ const {
   createTrayController,
   shouldQuitAfterAllWindowsClosed,
 } = require('./tray.cjs')
+const { createWindowInteractionController } = require('./window-interactions.cjs')
 
 const WINDOW_WIDTH = 600
 const WINDOW_HEIGHT = 640
@@ -148,6 +149,12 @@ let avatarWindow = null
 let settingsWindow = null
 let tray = null
 let isQuitting = false
+
+const windowInteractionController = createWindowInteractionController({
+  ipcMain,
+  screen,
+  getWindow: () => avatarWindow,
+})
 
 // ---------------------------------------------------- F5 main↔renderer 命令通道
 // MCP 视觉工具的执行路径：main 发 'live2d:command' { requestId, type, params } →
@@ -368,6 +375,7 @@ function createWindow() {
     },
   })
   avatarWindow = win
+  windowInteractionController.startGlobalMouseTracking(win)
 
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
@@ -511,6 +519,8 @@ function isSettingsSender(event) {
  * 创建时自注册（见 renderer-command-channel.cjs）。
  */
 function registerIpcHandlers() {
+  windowInteractionController.register()
+
   ipcMain.handle(SETTINGS_GET_CHANNEL, (event) => {
     if (!isSettingsSender(event)) throw new Error('settings IPC sender 非法')
     return settingsViewModel()
@@ -733,6 +743,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   stopAudioListener()
+  windowInteractionController.dispose()
   rendererCommandChannel.dispose()
   if (tray && !tray.isDestroyed()) tray.destroy()
   tray = null
