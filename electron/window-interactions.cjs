@@ -3,7 +3,7 @@
 /**
  * ADR 0002 · S1：角色窗桌面交互的 main 进程边界。
  *
- * 这里集中管理固定 IPC 通道、窗口移动 snap、内存缩放值和全局鼠标轮询。
+ * 这里集中管理固定 IPC 通道、窗口移动 snap、内存缩放值、鼠标穿透和全局鼠标轮询。
  * 模块不直接 require Electron，便于用 fake ipcMain / BrowserWindow 真实覆盖每个端点。
  */
 
@@ -13,6 +13,8 @@ const GET_WINDOW_SCALE_CHANNEL = 'live2d:get-window-scale'
 const SET_WINDOW_SCALE_CHANNEL = 'live2d:set-window-scale'
 const GLOBAL_MOUSE_MOVE_CHANNEL = 'live2d:global-mouse-move'
 const SET_SCALE_EVENT_CHANNEL = 'live2d:set-scale'
+const SET_MOUSE_IGNORE_CHANNEL = 'live2d:set-mouse-ignore'
+const OPEN_SETTINGS_CHANNEL = 'live2d:open-settings'
 
 const MIN_VISIBLE_WIDTH = 80
 const MIN_VISIBLE_HEIGHT = 40
@@ -72,6 +74,7 @@ function createWindowInteractionController({
   ipcMain,
   screen,
   getWindow,
+  openSettings = () => {},
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
 } = {}) {
@@ -80,6 +83,7 @@ function createWindowInteractionController({
     throw new TypeError('screen 必填')
   }
   if (typeof getWindow !== 'function') throw new TypeError('getWindow 必填')
+  if (typeof openSettings !== 'function') throw new TypeError('openSettings 必须是函数')
 
   const trackers = new Map()
   let registered = false
@@ -126,6 +130,26 @@ function createWindowInteractionController({
       windowScale = normalizeScale(rawScale)
       win.webContents.send(SET_SCALE_EVENT_CHANNEL, windowScale)
       return windowScale
+    },
+    [SET_MOUSE_IGNORE_CHANNEL]: (event, payload) => {
+      const win = requireAvatarSender(event)
+      if (
+        typeof payload !== 'object' ||
+        payload === null ||
+        typeof payload.ignore !== 'boolean'
+      ) {
+        throw new TypeError('窗口穿透参数非法')
+      }
+      if (typeof win.setIgnoreMouseEvents !== 'function') {
+        throw new Error('窗口不支持鼠标穿透')
+      }
+      win.setIgnoreMouseEvents(payload.ignore, { forward: true })
+      return payload.ignore
+    },
+    [OPEN_SETTINGS_CHANNEL]: (event) => {
+      requireAvatarSender(event)
+      openSettings()
+      return true
     },
   }
 
@@ -174,6 +198,8 @@ module.exports = {
   SET_WINDOW_SCALE_CHANNEL,
   GLOBAL_MOUSE_MOVE_CHANNEL,
   SET_SCALE_EVENT_CHANNEL,
+  SET_MOUSE_IGNORE_CHANNEL,
+  OPEN_SETTINGS_CHANNEL,
   MIN_VISIBLE_WIDTH,
   MIN_VISIBLE_HEIGHT,
   MIN_WINDOW_SCALE,

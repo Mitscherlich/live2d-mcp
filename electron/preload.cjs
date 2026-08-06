@@ -39,6 +39,8 @@ const GET_WINDOW_SCALE_CHANNEL = 'live2d:get-window-scale'
 const SET_WINDOW_SCALE_CHANNEL = 'live2d:set-window-scale'
 const GLOBAL_MOUSE_MOVE_CHANNEL = 'live2d:global-mouse-move'
 const SET_SCALE_EVENT_CHANNEL = 'live2d:set-scale'
+const SET_MOUSE_IGNORE_CHANNEL = 'live2d:set-mouse-ignore'
+const OPEN_SETTINGS_CHANNEL = 'live2d:open-settings'
 const COMMAND_TYPES = new Set([
   'getModelInfo',
   'setExpression',
@@ -114,6 +116,15 @@ const api = {
   async setWindowScale(scale) {
     if (!isFiniteNumber(scale)) throw new TypeError('窗口缩放值必须是有限数')
     return ipcRenderer.invoke(SET_WINDOW_SCALE_CHANNEL, scale)
+  },
+
+  async setMouseIgnore(ignore) {
+    if (typeof ignore !== 'boolean') throw new TypeError('窗口穿透参数必须是布尔值')
+    return ipcRenderer.invoke(SET_MOUSE_IGNORE_CHANNEL, { ignore })
+  },
+
+  openSettings() {
+    return ipcRenderer.invoke(OPEN_SETTINGS_CHANNEL)
   },
 
   onGlobalMouseMove(callback) {

@@ -4,9 +4,12 @@ import assert from 'node:assert/strict'
 import {
   clientPointToCanvas,
   clampWindowScale,
+  isDragModeEnabled,
   isModifierPressed,
+  isScaleModeEnabled,
   nextWindowScale,
   screenPointToLookDirection,
+  shouldProcessMouseFollow,
   zoomDirectionForKey,
   zoomDirectionForWheel,
 } from '../src/desktop-interactions.ts'
@@ -16,6 +19,21 @@ test('修饰键按平台分流：darwin 只认 Command，其余平台只认 Ctrl
   assert.equal(isModifierPressed({ metaKey: false, ctrlKey: true }, 'darwin'), false)
   assert.equal(isModifierPressed({ metaKey: false, ctrlKey: true }, 'win32'), true)
   assert.equal(isModifierPressed({ metaKey: true, ctrlKey: false }, 'linux'), false)
+})
+
+test('按钮拖动/缩放模式与 S1 修饰键模式可同时工作', () => {
+  assert.equal(isDragModeEnabled({ metaKey: false, ctrlKey: false }, 'darwin', true), true)
+  assert.equal(isDragModeEnabled({ metaKey: true, ctrlKey: false }, 'darwin', false), true)
+  assert.equal(isDragModeEnabled({ metaKey: false, ctrlKey: false }, 'darwin', false), false)
+  assert.equal(isScaleModeEnabled({ metaKey: false, ctrlKey: false }, 'darwin', true), true)
+  assert.equal(isScaleModeEnabled({ metaKey: true, ctrlKey: false }, 'darwin', false), true)
+  assert.equal(isScaleModeEnabled({ metaKey: false, ctrlKey: false }, 'darwin', false), false)
+})
+
+test('顶部按钮热区内暂停眼神跟随，离开后恢复处理', () => {
+  assert.equal(shouldProcessMouseFollow(true, true), false)
+  assert.equal(shouldProcessMouseFollow(true, false), true)
+  assert.equal(shouldProcessMouseFollow(false, false), false)
 })
 
 test('屏幕坐标按窗口中心归一化，Y 轴翻转并钳制到 [-1,1]', () => {

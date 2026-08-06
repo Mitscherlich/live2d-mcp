@@ -9,7 +9,9 @@ const {
   GET_WINDOW_BOUNDS_CHANNEL,
   GET_WINDOW_SCALE_CHANNEL,
   MOVE_WINDOW_CHANNEL,
+  OPEN_SETTINGS_CHANNEL,
   SET_SCALE_EVENT_CHANNEL,
+  SET_MOUSE_IGNORE_CHANNEL,
   SET_WINDOW_SCALE_CHANNEL,
   createWindowInteractionController,
 } = require('../window-interactions.cjs')
@@ -39,6 +41,7 @@ function createFakeWindow(bounds = { x: 100, y: 80, width: 600, height: 640 }) {
   win.destroyed = false
   win.positions = []
   win.sent = []
+  win.ignoreCalls = []
   win.webContents = {
     send(channel, payload) {
       win.sent.push({ channel, payload })
@@ -51,12 +54,16 @@ function createFakeWindow(bounds = { x: 100, y: 80, width: 600, height: 640 }) {
     win.bounds.x = x
     win.bounds.y = y
   }
+  win.setIgnoreMouseEvents = (ignore, options) => {
+    win.ignoreCalls.push({ ignore, options })
+  }
   return win
 }
 
 function setup() {
   const ipcMain = createFakeIpcMain()
   const win = createFakeWindow()
+  const settingsOpened = []
   const intervals = []
   const cleared = []
   const screen = {
@@ -72,6 +79,9 @@ function setup() {
     ipcMain,
     screen,
     getWindow: () => win,
+    openSettings() {
+      settingsOpened.push(true)
+    },
     setIntervalFn(callback, delay) {
       const token = { callback, delay }
       intervals.push(token)
@@ -83,10 +93,10 @@ function setup() {
   })
   controller.register()
   const event = { sender: win.webContents }
-  return { ipcMain, win, intervals, cleared, screen, controller, event }
+  return { ipcMain, win, intervals, cleared, screen, controller, event, settingsOpened }
 }
 
-test('窗口交互 IPC：四个 invoke 端点全部注册，dispose 后全部移除', () => {
+test('窗口交互 IPC：六个 invoke 端点全部注册，dispose 后全部移除', () => {
   const { ipcMain, controller } = setup()
   assert.deepEqual(
     [...ipcMain.handlers.keys()].sort(),
@@ -94,6 +104,8 @@ test('窗口交互 IPC：四个 invoke 端点全部注册，dispose 后全部移
       GET_WINDOW_BOUNDS_CHANNEL,
       GET_WINDOW_SCALE_CHANNEL,
       MOVE_WINDOW_CHANNEL,
+      OPEN_SETTINGS_CHANNEL,
+      SET_MOUSE_IGNORE_CHANNEL,
       SET_WINDOW_SCALE_CHANNEL,
     ].sort(),
   )
@@ -161,6 +173,36 @@ test('窗口缩放在 main 权威钳制到 0.5-1.75，并通过事件回推 rend
   assert.throws(
     () => ipcMain.invoke(SET_WINDOW_SCALE_CHANNEL, event, Number.POSITIVE_INFINITY),
     /缩放值非法/,
+  )
+})
+
+test('set-mouse-ignore 只接受布尔值，并始终以 forward=true 切换角色窗穿透', () => {
+  const { ipcMain, win, event } = setup()
+
+  assert.equal(ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, event, { ignore: true }), true)
+  assert.equal(ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, event, { ignore: false }), false)
+  assert.deepEqual(win.ignoreCalls, [
+    { ignore: true, options: { forward: true } },
+    { ignore: false, options: { forward: true } },
+  ])
+  assert.throws(
+    () => ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, event, { ignore: 'yes' }),
+    /窗口穿透参数非法/,
+  )
+  assert.throws(
+    () => ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, { sender: {} }, { ignore: true }),
+    /sender 非法/,
+  )
+})
+
+test('open-settings 只允许角色窗 sender，并调用既有设置窗入口', () => {
+  const { ipcMain, event, settingsOpened } = setup()
+
+  assert.equal(ipcMain.invoke(OPEN_SETTINGS_CHANNEL, event), true)
+  assert.deepEqual(settingsOpened, [true])
+  assert.throws(
+    () => ipcMain.invoke(OPEN_SETTINGS_CHANNEL, { sender: {} }),
+    /sender 非法/,
   )
 })
 

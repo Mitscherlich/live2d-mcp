@@ -57,6 +57,10 @@ declare global {
       getWindowBounds?: () => Promise<Live2dWindowBounds>
       getWindowScale?: () => Promise<number>
       setWindowScale?: (scale: number) => Promise<number>
+      /** 切换角色窗鼠标穿透；S2 锁定按钮使用，S3 完善热区恢复。 */
+      setMouseIgnore?: (ignore: boolean) => Promise<boolean>
+      /** 打开已有的 Electron 设置窗。 */
+      openSettings?: () => Promise<boolean>
       /** 订阅 main 约 30fps 推送的全局鼠标屏幕坐标 */
       onGlobalMouseMove?: (callback: (x: number, y: number) => void) => () => void
       /** 订阅 main 权威钳制后的模型缩放值 */

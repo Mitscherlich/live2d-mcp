@@ -35,6 +35,32 @@ export function isModifierPressed(event: ModifierState, platform: string): boole
   return platform === 'darwin' ? event.metaKey : event.ctrlKey
 }
 
+/** 按钮模式与 S1 修饰键模式可叠加：任一模式开启即可拖动窗口。 */
+export function isDragModeEnabled(
+  event: ModifierState,
+  platform: string,
+  buttonDragging: boolean,
+): boolean {
+  return buttonDragging || isModifierPressed(event, platform)
+}
+
+/** 按钮模式与 S1 修饰键模式可叠加：任一模式开启即可缩放。 */
+export function isScaleModeEnabled(
+  event: ModifierState,
+  platform: string,
+  buttonScaling: boolean,
+): boolean {
+  return buttonScaling || isModifierPressed(event, platform)
+}
+
+/** 顶部按钮热区内暂停眼神跟随；调试面板开关仍是另一层独立条件。 */
+export function shouldProcessMouseFollow(
+  mouseFollowEnabled: boolean,
+  inButtonHotspot: boolean,
+): boolean {
+  return mouseFollowEnabled && !inButtonHotspot
+}
+
 export function clampWindowScale(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_WINDOW_SCALE
   return Math.round(clamp(value, MIN_WINDOW_SCALE, MAX_WINDOW_SCALE) * 100) / 100

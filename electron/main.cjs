@@ -154,6 +154,7 @@ const windowInteractionController = createWindowInteractionController({
   ipcMain,
   screen,
   getWindow: () => avatarWindow,
+  openSettings: () => createSettingsWindow(),
 })
 
 // ---------------------------------------------------- F5 main↔renderer 命令通道

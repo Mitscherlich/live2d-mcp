@@ -11,7 +11,9 @@ const {
   GET_WINDOW_BOUNDS_CHANNEL,
   GET_WINDOW_SCALE_CHANNEL,
   MOVE_WINDOW_CHANNEL,
+  OPEN_SETTINGS_CHANNEL,
   SET_SCALE_EVENT_CHANNEL,
+  SET_MOUSE_IGNORE_CHANNEL,
   SET_WINDOW_SCALE_CHANNEL,
 } = require('../window-interactions.cjs')
 
@@ -60,24 +62,29 @@ function loadPreload() {
   return { api: exposed.api, ipcRenderer, invoked, listeners }
 }
 
-test('preload 四个 invoke API 只发送固定通道与窄负载', async () => {
+test('preload 六个窗口 invoke API 只发送固定通道与窄负载', async () => {
   const { api, invoked } = loadPreload()
 
   await api.moveWindow(4, -3)
   await api.getWindowBounds()
   await api.getWindowScale()
   await api.setWindowScale(1.25)
+  await api.setMouseIgnore(true)
+  await api.openSettings()
 
   assert.deepEqual(invoked, [
     { channel: MOVE_WINDOW_CHANNEL, payload: { deltaX: 4, deltaY: -3 } },
     { channel: GET_WINDOW_BOUNDS_CHANNEL, payload: undefined },
     { channel: GET_WINDOW_SCALE_CHANNEL, payload: undefined },
     { channel: SET_WINDOW_SCALE_CHANNEL, payload: 1.25 },
+    { channel: SET_MOUSE_IGNORE_CHANNEL, payload: { ignore: true } },
+    { channel: OPEN_SETTINGS_CHANNEL, payload: undefined },
   ])
 
   await assert.rejects(api.moveWindow(Number.NaN, 2), /移动增量必须是有限数/)
   await assert.rejects(api.setWindowScale(Number.NaN), /缩放值必须是有限数/)
-  assert.equal(invoked.length, 4, '非法负载不得调用任意 IPC')
+  await assert.rejects(api.setMouseIgnore('yes'), /窗口穿透参数必须是布尔值/)
+  assert.equal(invoked.length, 6, '非法负载不得调用任意 IPC')
 })
 
 test('preload 全局鼠标订阅只放行有限坐标，并可取消订阅', () => {

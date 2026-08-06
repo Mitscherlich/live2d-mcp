@@ -11,15 +11,19 @@ import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
 import {
   clientPointToCanvas,
   clampWindowScale,
+  isDragModeEnabled,
   isModifierPressed,
+  isScaleModeEnabled,
   nextWindowScale,
   screenPointToLookDirection,
+  shouldProcessMouseFollow,
   zoomDirectionForKey,
   zoomDirectionForWheel,
   type Point,
   type WindowBounds,
   type ZoomDirection,
 } from './desktop-interactions.js'
+import { initButtonGroup, type ButtonGroupController } from './button-group.js'
 
 /**
  * 顶部状态栏 + 底部调试条是否显示：**读 public/ui-chrome-boot.js 的判定结果**
@@ -85,9 +89,10 @@ function appendClickLog(px: number, py: number, hitAreas: string[], action: stri
 }
 
 /** 点击触发动作：陪伴模式真实功能，无条件挂接 */
-function initClickInteraction(app: Live2DApp) {
+function initClickInteraction(app: Live2DApp, buttonGroup: ButtonGroupController | null) {
   canvas.addEventListener('pointerdown', (e: PointerEvent) => {
     if (e.button !== 0 || isModifierPressed(e, PLATFORM)) return
+    if (buttonGroup?.isDragging() || buttonGroup?.isLocked()) return
     const rect = canvas.getBoundingClientRect()
     // getBoundingClientRect 已反映 CSS transform；按实际 rect 映射可保持缩放后 hitTest 正确。
     const { x, y } = clientPointToCanvas(
@@ -123,10 +128,11 @@ function initClickInteraction(app: Live2DApp) {
  * main 以约 30fps 推送全局屏幕坐标；renderer 查询当前窗口边界后按窗口中心归一化。
  * 事件只记录目标 + 置脏，实际 lookAt 每帧最多一次。
  */
-function initMouseFollow(app: Live2DApp) {
+function initMouseFollow(app: Live2DApp, buttonGroup: ButtonGroupController | null) {
   let targetX = 0
   let targetY = 0
   let dirty = false
+  let inButtonHotspot = buttonGroup?.isHotspotActive() ?? false
   let queuedPoint: Point | null = null
   let boundsRequestActive = false
   let boundsWarningShown = false
@@ -139,7 +145,7 @@ function initMouseFollow(app: Live2DApp) {
     boundsRequestActive = true
     void getWindowBounds()
       .then((bounds: WindowBounds) => {
-        if (!mouseFollowEnabled) return
+        if (!shouldProcessMouseFollow(mouseFollowEnabled, inButtonHotspot)) return
         const point = queuedPoint ?? requestedPoint
         queuedPoint = null
         const direction = screenPointToLookDirection(point, bounds)
@@ -158,8 +164,16 @@ function initMouseFollow(app: Live2DApp) {
       })
   }
 
+  const offHotspot = buttonGroup?.onHotspotChange((active) => {
+    inButtonHotspot = active
+    if (active) {
+      queuedPoint = null
+      dirty = false
+    }
+  })
+
   const off = window.live2d?.onGlobalMouseMove?.((x, y) => {
-    if (!mouseFollowEnabled) return
+    if (!shouldProcessMouseFollow(mouseFollowEnabled, inButtonHotspot)) return
     queuedPoint = { x, y }
     resolveQueuedPoint()
   })
@@ -168,14 +182,17 @@ function initMouseFollow(app: Live2DApp) {
   }
 
   app.addTicker(() => {
-    if (!dirty) return
+    if (!shouldProcessMouseFollow(mouseFollowEnabled, inButtonHotspot) || !dirty) return
     dirty = false
     app.lookAt(targetX, targetY)
   })
+
+  // 保持订阅引用存活；按钮组生命周期通常与页面一致，销毁时由其自身移除监听。
+  void offHotspot
 }
 
 /** Command/Ctrl + 指针拖动窗口；Command/Ctrl + 滚轮或 +/- 缩放模型。 */
-function initDesktopWindowControls() {
+function initDesktopWindowControls(buttonGroup: ButtonGroupController | null) {
   const api = window.live2d
   if (!api) return
 
@@ -208,7 +225,12 @@ function initDesktopWindowControls() {
   }
 
   window.addEventListener('pointerdown', (event: PointerEvent) => {
-    if (event.button !== 0 || !isModifierPressed(event, PLATFORM) || !api.moveWindow) return
+    if (
+      event.button !== 0 ||
+      !isDragModeEnabled(event, PLATFORM, buttonGroup?.isDragging() ?? false) ||
+      !api.moveWindow ||
+      buttonGroup?.containsTarget(event.target)
+    ) return
     event.preventDefault()
     dragPointerId = event.pointerId
     lastScreenPoint = { x: event.screenX, y: event.screenY }
@@ -224,7 +246,10 @@ function initDesktopWindowControls() {
 
   window.addEventListener('pointermove', (event: PointerEvent) => {
     if (event.pointerId !== dragPointerId || !lastScreenPoint) return
-    if ((event.buttons & 1) === 0 || !isModifierPressed(event, PLATFORM)) {
+    if (
+      (event.buttons & 1) === 0 ||
+      !isDragModeEnabled(event, PLATFORM, buttonGroup?.isDragging() ?? false)
+    ) {
       stopDragging()
       return
     }
@@ -244,7 +269,7 @@ function initDesktopWindowControls() {
   window.addEventListener(
     'wheel',
     (event: WheelEvent) => {
-      if (!isModifierPressed(event, PLATFORM)) return
+      if (!isScaleModeEnabled(event, PLATFORM, buttonGroup?.isScaling() ?? false)) return
       const direction = zoomDirectionForWheel(event.deltaY)
       if (direction === 0) return
       event.preventDefault()
@@ -254,7 +279,7 @@ function initDesktopWindowControls() {
   )
 
   window.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (!isModifierPressed(event, PLATFORM)) return
+    if (!isScaleModeEnabled(event, PLATFORM, buttonGroup?.isScaling() ?? false)) return
     const direction = zoomDirectionForKey(event.key)
     if (direction === 0) return
     event.preventDefault()
@@ -662,7 +687,8 @@ async function main() {
   console.log(
     `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`,
   )
-  initDesktopWindowControls()
+  const buttonGroup = initButtonGroup()
+  initDesktopWindowControls(buttonGroup)
 
   // 动态导入渲染核心：pixi-live2d-display/cubism4 在缺少 live2dcubismcore.min.js 时于
   // 模块加载期抛错（"Could not find Cubism 4 runtime"）；静态 import 会带走整个入口，
@@ -685,8 +711,8 @@ async function main() {
       modelStatus.textContent = '模型已加载'
       console.log('[Main] Live2D app initialized')
       // 鼠标跟随 / 点击触发动作是陪伴模式的真实功能；调试面板只在 ui-chrome 下构建
-      initMouseFollow(live2d)
-      initClickInteraction(live2d)
+      initMouseFollow(live2d, buttonGroup)
+      initClickInteraction(live2d, buttonGroup)
       if (UI_CHROME) initDebugPanel(live2d)
     } catch (e) {
       modelStatus.textContent = '模型加载失败'
