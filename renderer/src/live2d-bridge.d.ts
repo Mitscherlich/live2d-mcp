@@ -31,6 +31,13 @@ export interface Live2dCommandResult {
   error?: string
 }
 
+export interface Live2dWindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export {}
 
 declare global {
@@ -45,6 +52,21 @@ declare global {
         chrome?: string
         node?: string
       }
+      /** 按屏幕坐标增量移动角色窗；main 会执行跨屏 snap */
+      moveWindow?: (deltaX: number, deltaY: number) => Promise<Live2dWindowBounds>
+      getWindowBounds?: () => Promise<Live2dWindowBounds>
+      getWindowScale?: () => Promise<number>
+      setWindowScale?: (scale: number) => Promise<number>
+      /** 切换角色窗鼠标穿透；S2 锁定按钮使用，S3 完善热区恢复。 */
+      setMouseIgnore?: (ignore: boolean) => Promise<boolean>
+      /** 打开已有的 Electron 设置窗。 */
+      openSettings?: () => Promise<boolean>
+      /** 订阅 main 约 30fps 推送的全局鼠标屏幕坐标；第三参为同帧窗口 bounds（热区判定用），形状非法时为 null */
+      onGlobalMouseMove?: (
+        callback: (x: number, y: number, bounds: Live2dWindowBounds | null) => void,
+      ) => () => void
+      /** 订阅 main 权威钳制后的模型缩放值 */
+      onSetScale?: (callback: (scale: number) => void) => () => void
       /** 订阅 main 推送的规范化 voice 事件（state / audio-level）；返回取消订阅函数 */
       onVoiceEvent?: (callback: (event: VoiceEvent) => void) => () => void
       /** 注册 main → renderer 命令处理器（F5 MCP 执行路径）；返回取消注册函数 */

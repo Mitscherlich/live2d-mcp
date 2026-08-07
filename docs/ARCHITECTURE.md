@@ -28,7 +28,7 @@ Electron main (:47832 loopback)
 
 - 包管理与脚本入口为 **Bun**（`packageManager: bun@…`，锁文件 `bun.lock`）。安装用 `bun install`，任务用 `bun run …`。测试请用 `bun run test`（`node:test` 套件）；勿用裸 `bun test`（会进 Bun 内置测试器）。Electron 与 `node --check` / `node --test` 仍走 Node 兼容运行时。
 - `bun run dev` / `bun start` 均进入 Electron；托盘关闭角色窗时保活 bridge 与 renderer。
-- 设置窗展示实际 MCP URL，并将 voice source 原子写入 `userData/settings.json`；无环境覆盖时热更新 listener。
+- 设置窗展示实际 MCP URL，并将 voice source 与角色窗状态原子写入 `userData/settings.json`；无环境覆盖时热更新 listener。角色窗启动恢复位置/大小/缩放，恢复位置应用 80×40px 可见 snap。
 - 旧双进程形态（独立 `mcp-server` + 浏览器 renderer）已删除，Electron 一体化是唯一路径。
 
 ### 1.2 当前架构（Electron 一体化）
@@ -198,10 +198,10 @@ MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路�
 
 ### 4.5 托盘与设置生命周期（F7 落地）
 
-- `electron/tray.cjs` 用内置 PNG 创建托盘（macOS 使用 template image），菜单动作固定为显示角色窗、隐藏角色窗、打开设置、退出；不依赖 persona 或模型资源。
+- `electron/tray.cjs` 用内置 PNG 创建托盘（macOS 使用 template image），菜单动作固定为显示角色窗、隐藏角色窗、重置窗口位置、打开设置、退出；不依赖 persona 或模型资源。
 - 「把角色窗露出来」只有一处实现：`electron/main.cjs` 的 `showAvatarWindow()`（必要时建窗 → 最小化则 `restore()` → `show()` → `focus()`）。托盘显示/托盘点击、macOS dock `activate`、第二实例唤起、MCP `control_window show|toggle` 全部走它；`windowAction()` 退化为 MCP 适配层，只负责把 show/hide/toggle 翻译成显示或隐藏并返回操作后的可见性。
 - 有可用托盘时，角色窗 `close` 转为 `hide`，`window-all-closed` 不退出；托盘“退出”设置 quitting 状态后走 Electron 正常退出清理 bridge、MCP handler 与 listener。
-- `electron/settings-store.cjs` 将 `{ version, voiceSource }` 保存到 Electron `userData/settings.json`。候选值先经过 `sanitizeVoiceSource`，再以同目录临时文件 + rename 原子发布；非法输入不会破坏上一份配置。
+- `electron/settings-store.cjs` 将 `{ version, voiceSource, window: { x, y, width, height, scale } }` 保存到 Electron `userData/settings.json`。候选值先经过 `sanitizeVoiceSource` 与窗口状态范围校验，再以同目录临时文件 + rename 原子发布；非法输入不会破坏上一份配置。
 - `settings.html` 通过独立 sandbox preload 暴露的窄 IPC 读取/保存设置、复制 Codex 命令；renderer 无文件系统、clipboard 或任意 IPC 权限。
 - 设置窗的 MCP URL 优先取 bridge 实际监听端口，尚未监听时按 `LIVE2D_BRIDGE_PORT`（非法值回退 47832）展示。voice 保存后立即重启 listener；显式 `LIVE2D_*` 环境覆盖仍优先，UI 会提示需移除覆盖并重启。
 

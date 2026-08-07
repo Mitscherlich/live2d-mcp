@@ -27,6 +27,13 @@ test('设置文件不存在时读取默认 automatic 配置', () => withTempDir(
         source_id: null,
         source_name: null,
       },
+      window: {
+        x: null,
+        y: null,
+        width: 600,
+        height: 640,
+        scale: 1,
+      },
     },
     warnings: [],
   })
@@ -42,6 +49,51 @@ test('设置写入复用 voice source sanitize 并可持久化读取', () => wit
   assert.equal(saved.voiceSource.process_pattern, 'codex|chatgpt')
   assert.deepEqual(store.load(), { settings: saved, warnings: [] })
   assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).version, 1)
+}))
+
+test('窗口状态按有限坐标、尺寸范围和缩放范围规范化', () => withTempDir((directory) => {
+  const store = createSettingsStore({ filePath: path.join(directory, 'settings.json') })
+  const saved = store.save({
+    voiceSource: { mode: 'automatic' },
+    window: {
+      x: 12.6,
+      y: null,
+      width: 100,
+      height: 99999,
+      scale: 2,
+    },
+  })
+
+  assert.deepEqual(saved.window, {
+    x: 13,
+    y: null,
+    width: 360,
+    height: 4096,
+    scale: 1.75,
+  })
+  assert.deepEqual(store.load().settings.window, saved.window)
+}))
+
+test('缺失或非法窗口状态字段回退到默认值，坐标回退为 null', () => withTempDir((directory) => {
+  const store = createSettingsStore({ filePath: path.join(directory, 'settings.json') })
+  const saved = store.save({
+    voiceSource: { mode: 'automatic' },
+    window: {
+      x: 'bad',
+      y: Number.POSITIVE_INFINITY,
+      width: Number.NaN,
+      height: null,
+      scale: '1.2',
+    },
+  })
+
+  assert.deepEqual(saved.window, {
+    x: null,
+    y: null,
+    width: 600,
+    height: 640,
+    scale: 1,
+  })
 }))
 
 test('非法设置不会覆盖上一份有效配置', () => withTempDir((directory) => {

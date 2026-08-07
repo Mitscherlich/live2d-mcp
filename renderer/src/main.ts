@@ -8,6 +8,22 @@
 import type { Live2DApp } from './live2d-app.js'
 import { createVoiceLipSync, type MouthParamTarget } from './lip-sync.js'
 import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
+import {
+  clientPointToCanvas,
+  clampWindowScale,
+  isDragModeEnabled,
+  isModifierPressed,
+  isScaleModeEnabled,
+  nextWindowScale,
+  screenPointToLookDirection,
+  shouldProcessMouseFollow,
+  zoomDirectionForKey,
+  zoomDirectionForWheel,
+  type Point,
+  type WindowBounds,
+  type ZoomDirection,
+} from './desktop-interactions.js'
+import { initButtonGroup, type ButtonGroupController } from './button-group.js'
 
 /**
  * 顶部状态栏 + 底部调试条是否显示：**读 public/ui-chrome-boot.js 的判定结果**
@@ -17,6 +33,7 @@ import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
 const UI_CHROME = document.documentElement.classList.contains('ui-chrome')
 
 const canvas = document.getElementById('live2d-canvas') as HTMLCanvasElement
+const canvasContainer = document.getElementById('canvas-container') as HTMLDivElement
 const modelDot = document.getElementById('model-dot') as HTMLDivElement
 const modelStatus = document.getElementById('model-status') as HTMLSpanElement
 const voiceDot = document.getElementById('voice-dot') as HTMLDivElement
@@ -28,6 +45,8 @@ let currentMotion = '-'
 
 /** 鼠标跟随：陪伴模式的真实功能，默认开启；调试面板的 checkbox 只是它的一个开关 */
 let mouseFollowEnabled = true
+
+const PLATFORM = window.live2d?.platform ?? 'web'
 
 /** 状态栏用的动作标识：直接用模型原始 group/index，换模型也不退化 */
 function motionTag(group: string, index?: number): string {
@@ -69,25 +88,18 @@ function appendClickLog(px: number, py: number, hitAreas: string[], action: stri
   if (logPane) logPane.scrollTop = logPane.scrollHeight
 }
 
-/** canvas 位置/尺寸缓存：mousemove 每次 getBoundingClientRect 会强制布局 */
-let canvasRect: DOMRect | null = null
-function getCanvasRect(): DOMRect {
-  if (!canvasRect) canvasRect = canvas.getBoundingClientRect()
-  return canvasRect
-}
-window.addEventListener('resize', () => {
-  canvasRect = null
-})
-
 /** 点击触发动作：陪伴模式真实功能，无条件挂接 */
-function initClickInteraction(app: Live2DApp) {
+function initClickInteraction(app: Live2DApp, buttonGroup: ButtonGroupController | null) {
   canvas.addEventListener('pointerdown', (e: PointerEvent) => {
-    const rect = getCanvasRect()
-    // 转换为 canvas 物理像素坐标（考虑 devicePixelRatio 缩放）
-    const scaleX = canvas.width / rect.width
-    const scaleY = canvas.height / rect.height
-    const x = (e.clientX - rect.left) * scaleX
-    const y = (e.clientY - rect.top) * scaleY
+    if (e.button !== 0 || isModifierPressed(e, PLATFORM)) return
+    if (buttonGroup?.isDragging() || buttonGroup?.isLocked()) return
+    const rect = canvas.getBoundingClientRect()
+    // getBoundingClientRect 已反映 CSS transform；按实际 rect 映射可保持缩放后 hitTest 正确。
+    const { x, y } = clientPointToCanvas(
+      { x: e.clientX, y: e.clientY },
+      rect,
+      { width: canvas.width, height: canvas.height },
+    )
 
     const hitAreas = app.hitTest(x, y)
 
@@ -113,26 +125,165 @@ function initClickInteraction(app: Live2DApp) {
 
 /**
  * 鼠标跟随：陪伴模式真实功能，无条件挂接，不依赖任何调试 DOM。
- * mousemove 只记录目标坐标 + 置脏，实际 lookAt 每帧最多一次
- * （focus 控制器本就按帧插值，按事件频率调用纯属浪费）。
+ * main 以约 30fps 推送全局屏幕坐标；renderer 查询当前窗口边界后按窗口中心归一化。
+ * 事件只记录目标 + 置脏，实际 lookAt 每帧最多一次。
  */
-function initMouseFollow(app: Live2DApp) {
+function initMouseFollow(app: Live2DApp, buttonGroup: ButtonGroupController | null) {
   let targetX = 0
   let targetY = 0
   let dirty = false
+  let inButtonHotspot = buttonGroup?.isHotspotActive() ?? false
+  let queuedPoint: Point | null = null
+  let boundsRequestActive = false
+  let boundsWarningShown = false
+  const getWindowBounds = window.live2d?.getWindowBounds
 
-  window.addEventListener('mousemove', (e: MouseEvent) => {
-    if (!mouseFollowEnabled) return
-    const rect = getCanvasRect()
-    targetX = Math.max(-1, Math.min(1, (e.clientX - rect.left - rect.width / 2) / (rect.width / 2)))
-    targetY = Math.max(-1, Math.min(1, -((e.clientY - rect.top - rect.height / 2) / (rect.height / 2))))
-    dirty = true
+  const resolveQueuedPoint = () => {
+    if (boundsRequestActive || !queuedPoint || !getWindowBounds) return
+    const requestedPoint = queuedPoint
+    queuedPoint = null
+    boundsRequestActive = true
+    void getWindowBounds()
+      .then((bounds: WindowBounds) => {
+        if (!shouldProcessMouseFollow(mouseFollowEnabled, inButtonHotspot)) return
+        const point = queuedPoint ?? requestedPoint
+        queuedPoint = null
+        const direction = screenPointToLookDirection(point, bounds)
+        targetX = direction.x
+        targetY = direction.y
+        dirty = true
+      })
+      .catch((error: unknown) => {
+        if (boundsWarningShown) return
+        boundsWarningShown = true
+        console.warn('[MouseFollow] 获取窗口边界失败，全局眼神跟随暂停:', error)
+      })
+      .finally(() => {
+        boundsRequestActive = false
+        if (queuedPoint) resolveQueuedPoint()
+      })
+  }
+
+  const offHotspot = buttonGroup?.onHotspotChange((active) => {
+    inButtonHotspot = active
+    if (active) {
+      queuedPoint = null
+      dirty = false
+    }
   })
 
+  const off = window.live2d?.onGlobalMouseMove?.((x, y) => {
+    if (!shouldProcessMouseFollow(mouseFollowEnabled, inButtonHotspot)) return
+    queuedPoint = { x, y }
+    resolveQueuedPoint()
+  })
+  if (!off || !getWindowBounds) {
+    console.warn('[MouseFollow] preload 未暴露全局鼠标/窗口边界 API，眼神跟随不可用')
+  }
+
   app.addTicker(() => {
-    if (!dirty) return
+    if (!shouldProcessMouseFollow(mouseFollowEnabled, inButtonHotspot) || !dirty) return
     dirty = false
     app.lookAt(targetX, targetY)
+  })
+
+  // 保持订阅引用存活；按钮组生命周期通常与页面一致，销毁时由其自身移除监听。
+  void offHotspot
+}
+
+/** Command/Ctrl + 指针拖动窗口；Command/Ctrl + 滚轮或 +/- 缩放模型。 */
+function initDesktopWindowControls(buttonGroup: ButtonGroupController | null) {
+  const api = window.live2d
+  if (!api) return
+
+  let currentScale = 1
+  const applyScale = (rawScale: number) => {
+    currentScale = clampWindowScale(rawScale)
+    canvasContainer.style.transform = `scale(${currentScale})`
+  }
+  api.onSetScale?.(applyScale)
+  void api.getWindowScale?.().then(applyScale).catch((error: unknown) => {
+    console.warn('[WindowControls] 读取初始缩放失败:', error)
+  })
+
+  const requestScale = (direction: ZoomDirection) => {
+    if (direction === 0 || !api.setWindowScale) return
+    const nextScale = nextWindowScale(currentScale, direction)
+    if (nextScale === currentScale) return
+    applyScale(nextScale)
+    void api.setWindowScale(nextScale).then(applyScale).catch((error: unknown) => {
+      console.warn('[WindowControls] 设置缩放失败:', error)
+    })
+  }
+
+  let dragPointerId: number | null = null
+  let lastScreenPoint: Point | null = null
+
+  const stopDragging = () => {
+    dragPointerId = null
+    lastScreenPoint = null
+  }
+
+  window.addEventListener('pointerdown', (event: PointerEvent) => {
+    if (
+      event.button !== 0 ||
+      !isDragModeEnabled(event, PLATFORM, buttonGroup?.isDragging() ?? false) ||
+      !api.moveWindow ||
+      buttonGroup?.containsTarget(event.target)
+    ) return
+    event.preventDefault()
+    dragPointerId = event.pointerId
+    lastScreenPoint = { x: event.screenX, y: event.screenY }
+    const target = event.target
+    if (target instanceof Element && 'setPointerCapture' in target) {
+      try {
+        target.setPointerCapture(event.pointerId)
+      } catch {
+        // 某些透明区域不支持 capture；window 级监听仍可继续拖动。
+      }
+    }
+  })
+
+  window.addEventListener('pointermove', (event: PointerEvent) => {
+    if (event.pointerId !== dragPointerId || !lastScreenPoint) return
+    if (
+      (event.buttons & 1) === 0 ||
+      !isDragModeEnabled(event, PLATFORM, buttonGroup?.isDragging() ?? false)
+    ) {
+      stopDragging()
+      return
+    }
+    event.preventDefault()
+    const deltaX = event.screenX - lastScreenPoint.x
+    const deltaY = event.screenY - lastScreenPoint.y
+    lastScreenPoint = { x: event.screenX, y: event.screenY }
+    if (deltaX === 0 && deltaY === 0) return
+    void api.moveWindow!(deltaX, deltaY).catch((error: unknown) => {
+      console.warn('[WindowControls] 移动窗口失败:', error)
+      stopDragging()
+    })
+  })
+  window.addEventListener('pointerup', stopDragging)
+  window.addEventListener('pointercancel', stopDragging)
+
+  window.addEventListener(
+    'wheel',
+    (event: WheelEvent) => {
+      if (!isScaleModeEnabled(event, PLATFORM, buttonGroup?.isScaling() ?? false)) return
+      const direction = zoomDirectionForWheel(event.deltaY)
+      if (direction === 0) return
+      event.preventDefault()
+      requestScale(direction)
+    },
+    { passive: false },
+  )
+
+  window.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (!isScaleModeEnabled(event, PLATFORM, buttonGroup?.isScaling() ?? false)) return
+    const direction = zoomDirectionForKey(event.key)
+    if (direction === 0) return
+    event.preventDefault()
+    requestScale(direction)
   })
 }
 
@@ -536,6 +687,8 @@ async function main() {
   console.log(
     `[Main] Running inside Electron ${window.live2d?.versions.electron ?? ''} (${window.live2d?.platform ?? 'unknown'})`,
   )
+  const buttonGroup = initButtonGroup()
+  initDesktopWindowControls(buttonGroup)
 
   // 动态导入渲染核心：pixi-live2d-display/cubism4 在缺少 live2dcubismcore.min.js 时于
   // 模块加载期抛错（"Could not find Cubism 4 runtime"）；静态 import 会带走整个入口，
@@ -558,8 +711,8 @@ async function main() {
       modelStatus.textContent = '模型已加载'
       console.log('[Main] Live2D app initialized')
       // 鼠标跟随 / 点击触发动作是陪伴模式的真实功能；调试面板只在 ui-chrome 下构建
-      initMouseFollow(live2d)
-      initClickInteraction(live2d)
+      initMouseFollow(live2d, buttonGroup)
+      initClickInteraction(live2d, buttonGroup)
       if (UI_CHROME) initDebugPanel(live2d)
     } catch (e) {
       modelStatus.textContent = '模型加载失败'

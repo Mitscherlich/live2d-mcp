@@ -10,10 +10,12 @@
 const TRAY_ICON_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
-function buildTrayMenuTemplate({ showAvatar, hideAvatar, openSettings, quitApp }) {
+function buildTrayMenuTemplate({ showAvatar, hideAvatar, resetAvatar = () => {}, openSettings, quitApp }) {
   return [
     { label: '显示角色窗', click: showAvatar },
     { label: '隐藏角色窗', click: hideAvatar },
+    { type: 'separator' },
+    { label: '重置窗口位置', click: resetAvatar },
     { type: 'separator' },
     { label: '打开设置', click: openSettings },
     { type: 'separator' },

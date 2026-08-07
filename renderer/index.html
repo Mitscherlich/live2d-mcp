@@ -35,6 +35,8 @@
         position: relative;
         width: 600px;
         height: 600px;
+        transform-origin: center center;
+        transition: transform 0.1s ease-out;
       }
 
       canvas {
@@ -110,21 +112,144 @@
         display: none !important;
       }
 
-      /* 无工具条时的隐形拖拽条（frameless 窗仍可移动） */
+      /* S1 起统一由 Command/Ctrl + DOM pointer 处理拖动；保留节点只为兼容既有 DOM。 */
       #window-drag-region {
         display: none;
         position: fixed;
         top: 0;
         left: 0;
         right: 0;
-        height: 32px;
+        height: 48px;
         z-index: 50;
-        -webkit-app-region: drag;
+        -webkit-app-region: no-drag;
+        pointer-events: none;
       }
       html.electron-mode:not(.ui-chrome) #window-drag-region,
       body.electron-mode:not(.ui-chrome) #window-drag-region {
         display: block;
       }
+
+      /* ADR 0002 S2：顶部热区内的悬浮按钮组；按钮本身永远不参与原生拖拽。 */
+      #button-group {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 20px;
+        background: rgba(18, 22, 32, 0.78);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-50%) scale(1);
+        transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+        -webkit-app-region: no-drag;
+        user-select: none;
+        z-index: 60;
+      }
+
+      #button-group.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #button-group.locked {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-50%) scale(0.84);
+      }
+
+      #button-group.locked.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      /* 锁定态只展示解锁按钮，避免穿透窗上误触拖动/缩放/设置 */
+      #button-group.locked [data-action="drag"],
+      #button-group.locked [data-action="scale"],
+      #button-group.locked [data-action="settings"] {
+        display: none;
+      }
+
+      #button-group button {
+        width: 26px;
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.09);
+        color: #fff;
+        cursor: pointer;
+        -webkit-app-region: no-drag;
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+      }
+
+      #button-group button:hover {
+        background: rgba(255, 255, 255, 0.2);
+        border-color: rgba(255, 255, 255, 0.34);
+        transform: translateY(-1px);
+      }
+
+      #button-group button:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.8);
+        outline-offset: 2px;
+      }
+
+      #button-group button.active[data-action="drag"] {
+        background: rgba(53, 145, 255, 0.86);
+        border-color: #72baff;
+      }
+
+      #button-group button.active[data-action="scale"] {
+        background: rgba(238, 145, 42, 0.9);
+        border-color: #ffc16b;
+      }
+
+      #button-group button.active[data-action="lock"] {
+        background: rgba(112, 119, 133, 0.92);
+        border-color: #e0e4ea;
+      }
+
+      #button-group svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.8;
+        pointer-events: none;
+      }
+
+      #button-group [data-lock-status] {
+        margin: 0 3px 0 1px;
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      /* ADR 0002 S3：锁定穿透时的不可见顶部热区（悬浮判定已由全局鼠标流接管，此处仅作占位）。 */
+      #lock-hotspot {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 44px;
+        z-index: 55;
+        pointer-events: none;
+        -webkit-app-region: no-drag;
+      }
+
+      #lock-hotspot.locked {
+        pointer-events: auto;
+      }
+
       #canvas-container,
       #live2d-canvas,
       #debug-panel,
@@ -380,7 +505,36 @@
   </head>
   <body>
     <!-- Electron 无工具条时用于拖动 frameless 窗口 -->
-    <div id="window-drag-region" aria-hidden="true"></div>
+    <div id="window-drag-region">
+      <div id="lock-hotspot" aria-hidden="true"></div>
+      <div id="button-group" role="toolbar" aria-label="窗口控制" aria-hidden="true">
+        <button type="button" data-action="drag" aria-label="拖动窗口" aria-pressed="false" title="拖动窗口">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v18M3 12h18" />
+            <path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" />
+          </svg>
+        </button>
+        <button type="button" data-action="scale" aria-label="缩放窗口" aria-pressed="false" title="滚轮缩放">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="5.5" />
+            <path d="m15 15 5 5M10.5 8v5M8 10.5h5" />
+          </svg>
+        </button>
+        <button type="button" data-action="lock" aria-label="锁定窗口" aria-pressed="false" title="锁定窗口">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="10" width="14" height="10" rx="2" />
+            <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" />
+          </svg>
+        </button>
+        <button type="button" data-action="settings" aria-label="打开设置" title="打开设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24 4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24 4.24-4.24" />
+          </svg>
+        </button>
+        <span data-lock-status hidden>已锁定</span>
+      </div>
+    </div>
     <div id="status-bar">
       <div class="status-indicator">
         <div class="dot" id="model-dot"></div>
