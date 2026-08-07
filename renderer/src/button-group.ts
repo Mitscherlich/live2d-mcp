@@ -157,6 +157,10 @@ export function createButtonGroupState(
   }
 
   const setHotspotActive = (active: boolean) => {
+    // 锁定态按钮热区无意义：可见性由锁定热区（全局鼠标流驱动）独占。
+    // 穿透态残留的窗口 mousemove 不得唤出工具条，也不得滞留 inHotspot=true
+    // （光标快速离开窗口时 mouseleave 静默丢失，滞留会永久暂停眼神跟随）。
+    if (state.locked) return
     if (state.inHotspot === active) {
       if (active) show()
       return
@@ -185,11 +189,10 @@ export function createButtonGroupState(
         state.inHotspot = false
         for (const listener of hotspotListeners) listener(false)
       }
-      // 锁定时不立即显示，只有 hover 到热区时才显示
-      hide()
-    } else {
-      scheduleHide()
     }
+    // 锁定/解锁都走 800ms 延迟隐藏：给状态切换一个视觉确认再淡出；
+    // lockHotspotActive 由全局鼠标流保证真实，定时器一定生效。
+    scheduleHide()
     // 锁定/解锁是明确的用户动作，立即切换；只有热区 hover 才走防抖路径。
     applyMouseIgnore(locked)
     notify()

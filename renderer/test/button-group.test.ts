@@ -107,7 +107,9 @@ test('锁定状态调用鼠标穿透回调、关闭拖动/缩放并默认隐藏'
   assert.equal(controller.isLocked(), true)
   assert.equal(controller.isDragging(), false)
   assert.equal(controller.isScaling(), false)
-  // 锁定时默认隐藏
+  // 锁定后 800ms 延迟隐藏（不是立即），给状态切换一个视觉确认
+  assert.equal(controller.isVisible(), true)
+  timers.runLatest()
   assert.equal(controller.isVisible(), false)
 
   // 全局鼠标流持续上报：光标在热区外，先解除"锁定瞬间仍在热区"的抑制
@@ -205,8 +207,37 @@ test('锁定瞬间鼠标仍在热区时抑制唤出，离开后再悬浮才显�
   // 解锁后抑制标志清除，下次锁定重新生效
   controller.setLocked(false)
   controller.setLocked(true)
+  timers.runLatest() // 锁定的 800ms 延迟隐藏
   controller.setLockHotspotActive(true)
   assert.equal(controller.isVisible(), false, '重新锁定后抑制再次生效')
+})
+
+test('锁定后穿透态残留的按钮热区信号不得唤出工具条或滞留热区状态', () => {
+  const timers = createManualTimers()
+  const hotspotChanges: boolean[] = []
+  const controller = createButtonGroupState({
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+  })
+  controller.onHotspotChange((active) => hotspotChanges.push(active))
+
+  // 悬停顶部 → 工具条展示
+  controller.setHotspotActive(true)
+  assert.equal(controller.isVisible(), true)
+
+  // 点击锁定：广播热区退出（眼神跟随恢复），调度 800ms 延迟隐藏
+  controller.setLocked(true)
+  assert.equal(controller.isHotspotActive(), false)
+
+  // 鼠标尚未离开窗口，穿透转发的残留 mousemove 上报"仍在按钮热区"
+  controller.setHotspotActive(true)
+  assert.equal(controller.isHotspotActive(), false, '锁定态按钮热区信号被忽略')
+  assert.equal(controller.isVisible(), true, '残留信号不得打断延迟隐藏')
+  assert.deepEqual(hotspotChanges, [true, false], '不再重复广播')
+
+  // 快速移出窗口（mouseleave 静默丢失，无任何事件）：800ms 定时器照常隐藏
+  timers.runLatest()
+  assert.equal(controller.isVisible(), false)
 })
 
 test('锁定时强制退出按钮热区并广播，避免穿透态热区滞留暂停眼神跟随', () => {
