@@ -103,7 +103,8 @@ export function createButtonGroupState(
     }, mouseIgnoreDebounceMs)
   }
 
-  const isActive = () => state.dragging || state.scaling || state.locked
+  // 锁定状态不算"激活"，因为锁定时需要隐藏 toolbar（只有 hover 热区才显示）
+  const isActive = () => state.dragging || state.scaling
 
   const notify = () => {
     options.onStateChange?.(snapshotOf(state))
@@ -118,6 +119,15 @@ export function createButtonGroupState(
 
   const hide = () => {
     clearHideTimer()
+    // 锁定时允许隐藏（只有 hover 热区时才显示）
+    if (state.locked) {
+      if (state.lockHotspotActive) return // hover 热区时不隐藏
+      if (!state.visible) return
+      state.visible = false
+      notify()
+      return
+    }
+    // 非锁定时，激活状态或热区内不隐藏
     if (isActive() || state.inHotspot) return
     if (!state.visible) return
     state.visible = false
@@ -126,6 +136,16 @@ export function createButtonGroupState(
 
   const scheduleHide = () => {
     clearHideTimer()
+    // 锁定时，只有不在热区才调度隐藏
+    if (state.locked) {
+      if (state.lockHotspotActive || !state.visible) return
+      hideTimer = schedule(() => {
+        hideTimer = null
+        hide()
+      }, hideDelayMs)
+      return
+    }
+    // 非锁定时，激活状态或热区内不调度隐藏
     if (isActive() || state.inHotspot || !state.visible) return
     hideTimer = schedule(() => {
       hideTimer = null
@@ -169,8 +189,15 @@ export function createButtonGroupState(
     if (state.lockHotspotActive === active) return
     state.lockHotspotActive = active
     if (state.locked) {
-      scheduleMouseIgnore(!active)
-      if (active) show()
+      if (active) {
+        scheduleMouseIgnore(false)
+        show()
+      } else {
+        // 离开锁定热区后必须调度延迟隐藏，否则锁定态下悬浮一次工具条就常驻。
+        // 先排隐藏（800ms）再排穿透防抖（100ms），穿透先生效，淡出期间窗口即恢复穿透。
+        scheduleHide()
+        scheduleMouseIgnore(true)
+      }
     }
     notify()
   }

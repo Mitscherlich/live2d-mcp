@@ -92,7 +92,7 @@ test('拖动与缩放状态互斥，任一激活状态都会阻止自动隐藏',
   assert.equal(controller.isVisible(), false)
 })
 
-test('锁定状态调用鼠标穿透回调、关闭拖动/缩放并保持缩小态可见', () => {
+test('锁定状态调用鼠标穿透回调、关闭拖动/缩放并默认隐藏', () => {
   const timers = createManualTimers()
   const ignores: boolean[] = []
   const controller = createButtonGroupState({
@@ -107,14 +107,24 @@ test('锁定状态调用鼠标穿透回调、关闭拖动/缩放并保持缩小�
   assert.equal(controller.isLocked(), true)
   assert.equal(controller.isDragging(), false)
   assert.equal(controller.isScaling(), false)
-  assert.equal(controller.isVisible(), true)
+  // 锁定时默认隐藏
+  assert.equal(controller.isVisible(), false)
 
-  controller.setHotspotActive(false)
+  // 悬浮到热区时显示，防抖后临时恢复交互
+  controller.setLockHotspotActive(true)
   assert.equal(controller.isVisible(), true)
-  controller.setLocked(false)
+  timers.runLatest()
   assert.deepEqual(ignores, [true, false])
+
+  // 离开热区后防抖恢复穿透（latest 为 100ms 防抖），再跑 800ms 隐藏
+  controller.setLockHotspotActive(false)
+  timers.runLatest()
+  assert.deepEqual(ignores, [true, false, true])
   timers.runLatest()
   assert.equal(controller.isVisible(), false)
+
+  controller.setLocked(false)
+  assert.deepEqual(ignores, [true, false, true, false])
 })
 
 test('锁定热区进入/离开以 100ms 防抖临时恢复或重新启用鼠标穿透', () => {
@@ -143,11 +153,14 @@ test('锁定热区进入/离开以 100ms 防抖临时恢复或重新启用鼠标
   timers.runLatest()
   assert.deepEqual(ignores, [true, false, true])
 
-  // 100ms 内快速往返时，后一个状态取消前一个状态，不应产生多余切换。
+  // 100ms 内快速往返时，后一个状态取消前一个穿透防抖，不应产生多余切换；
+  // 但离开热区后仍需调度 800ms 延迟隐藏，否则锁定态下工具条常驻。
   controller.setLockHotspotActive(true)
   controller.setLockHotspotActive(false)
-  assert.equal(timers.latest(), undefined)
   assert.deepEqual(ignores, [true, false, true])
+  assert.equal(timers.latest()?.delayMs, 800)
+  timers.runLatest()
+  assert.equal(controller.isVisible(), false)
 })
 
 test('解锁快捷键按平台选择 Command/Ctrl，且不要求热区状态', () => {
