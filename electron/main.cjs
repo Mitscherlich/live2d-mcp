@@ -158,6 +158,7 @@ let persistedSettings = defaultSettings()
 
 function currentAvatarWindowState() {
   if (!avatarWindow || avatarWindow.isDestroyed()) return null
+  if (!windowInteractionController) return null
   return {
     ...avatarWindow.getBounds(),
     scale: windowInteractionController.getWindowScale(),
@@ -176,27 +177,20 @@ function persistWindowState(state = currentAvatarWindowState()) {
   }
 }
 
-const windowInteractionController = createWindowInteractionController({
-  ipcMain,
-  screen,
-  getWindow: () => avatarWindow,
-  openSettings: () => createSettingsWindow(),
-  onWindowStateChange: (state) => persistWindowState(state),
-})
-
 // ---------------------------------------------------- F5 main↔renderer 命令通道
 // MCP 视觉工具的执行路径：main 发 'live2d:command' { requestId, type, params } →
 // preload 窄校验后交 renderer 注册的 handler（renderer/src/main.ts）执行 Live2DApp →
 // 'live2d:command-result' 回传 { requestId, result }。
 // requestId 关联、超时、ready 门禁、窗口销毁冲销全在 renderer-command-channel.cjs
 // 内（有单测）；main 只提供 ipcMain 与「当前角色窗」两个注入点。
-const rendererCommandChannel = createRendererCommandChannel({
-  ipcMain,
-  getWindow: () => avatarWindow,
-})
+let rendererCommandChannel = null
+let windowInteractionController = null
 
 /** MCP 工具回调统一经此发命令；失败一律 resolve 为 { ok:false, error } 供清晰降级 */
 function sendRendererCommand(type, params) {
+  if (!rendererCommandChannel) {
+    return Promise.resolve({ ok: false, error: '命令通道未初始化' })
+  }
   return rendererCommandChannel.send(type, params)
 }
 
@@ -627,6 +621,22 @@ if (!gotSingleInstanceLock) {
       }
       registerRendererProtocol(DIST_DIR)
     }
+
+    // 初始化窗口交互控制器（需要在 app ready 后，因为依赖 screen 模块）
+    windowInteractionController = createWindowInteractionController({
+      ipcMain,
+      screen,
+      getWindow: () => avatarWindow,
+      openSettings: () => createSettingsWindow(),
+      onWindowStateChange: (state) => persistWindowState(state),
+    })
+
+    // 初始化渲染器命令通道
+    rendererCommandChannel = createRendererCommandChannel({
+      ipcMain,
+      getWindow: () => avatarWindow,
+    })
+
     settingsStore = createSettingsStore({
       filePath: path.join(app.getPath('userData'), 'settings.json'),
     })
