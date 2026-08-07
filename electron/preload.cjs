@@ -131,7 +131,17 @@ const api = {
     if (typeof callback !== 'function') return () => {}
     const listener = (_event, point) => {
       if (isPlainObject(point) && isFiniteNumber(point.x) && isFiniteNumber(point.y)) {
-        callback(point.x, point.y)
+        // bounds 由 main 轮询顺带推送（renderer 热区判定用），形状非法时降级为 null
+        const bounds = isPlainObject(point.bounds) &&
+          ['x', 'y', 'width', 'height'].every((key) => isFiniteNumber(point.bounds[key]))
+          ? {
+              x: point.bounds.x,
+              y: point.bounds.y,
+              width: point.bounds.width,
+              height: point.bounds.height,
+            }
+          : null
+        callback(point.x, point.y, bounds)
       }
     }
     ipcRenderer.on(GLOBAL_MOUSE_MOVE_CHANNEL, listener)

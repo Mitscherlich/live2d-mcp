@@ -90,12 +90,26 @@ test('preload 六个窗口 invoke API 只发送固定通道与窄负载', async 
 test('preload 全局鼠标订阅只放行有限坐标，并可取消订阅', () => {
   const { api, ipcRenderer, listeners } = loadPreload()
   const points = []
-  const off = api.onGlobalMouseMove((x, y) => points.push({ x, y }))
+  const off = api.onGlobalMouseMove((x, y, bounds) => points.push({ x, y, bounds }))
 
-  ipcRenderer.emit(GLOBAL_MOUSE_MOVE_CHANNEL, { x: 12, y: -8 })
+  ipcRenderer.emit(GLOBAL_MOUSE_MOVE_CHANNEL, {
+    x: 12,
+    y: -8,
+    bounds: { x: 100, y: 80, width: 600, height: 640 },
+  })
   ipcRenderer.emit(GLOBAL_MOUSE_MOVE_CHANNEL, { x: '12', y: -8 })
   ipcRenderer.emit(GLOBAL_MOUSE_MOVE_CHANNEL, { x: Number.NaN, y: 4 })
-  assert.deepEqual(points, [{ x: 12, y: -8 }])
+  assert.equal(points.length, 1)
+  assert.equal(points[0].x, 12)
+  assert.equal(points[0].y, -8)
+  // preload 运行在独立 vm realm，bounds 原型与测试域不同，展开后再做结构比较
+  assert.deepEqual({ ...points[0].bounds }, { x: 100, y: 80, width: 600, height: 640 })
+
+  // bounds 缺失/形状非法时降级为 null，不阻断坐标投递
+  ipcRenderer.emit(GLOBAL_MOUSE_MOVE_CHANNEL, { x: 1, y: 2 })
+  ipcRenderer.emit(GLOBAL_MOUSE_MOVE_CHANNEL, { x: 1, y: 2, bounds: { x: 1 } })
+  assert.equal(points.at(-2).bounds, null)
+  assert.equal(points.at(-1).bounds, null)
 
   off()
   assert.equal(listeners.get(GLOBAL_MOUSE_MOVE_CHANNEL).length, 0)

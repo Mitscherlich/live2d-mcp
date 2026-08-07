@@ -61,8 +61,10 @@ declare global {
       setMouseIgnore?: (ignore: boolean) => Promise<boolean>
       /** 打开已有的 Electron 设置窗。 */
       openSettings?: () => Promise<boolean>
-      /** 订阅 main 约 30fps 推送的全局鼠标屏幕坐标 */
-      onGlobalMouseMove?: (callback: (x: number, y: number) => void) => () => void
+      /** 订阅 main 约 30fps 推送的全局鼠标屏幕坐标；第三参为同帧窗口 bounds（热区判定用），形状非法时为 null */
+      onGlobalMouseMove?: (
+        callback: (x: number, y: number, bounds: Live2dWindowBounds | null) => void,
+      ) => () => void
       /** 订阅 main 权威钳制后的模型缩放值 */
       onSetScale?: (callback: (scale: number) => void) => () => void
       /** 订阅 main 推送的规范化 voice 事件（state / audio-level）；返回取消订阅函数 */

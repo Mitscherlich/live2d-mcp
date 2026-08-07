@@ -1,5 +1,7 @@
 export const BUTTON_HOTSPOT_HEIGHT = 48
-export const LOCK_HOTSPOT_HEIGHT = 40
+// 按钮组实际占高 42px（top 8 + padding 4 + 按钮 26 + padding 4），锁定热区多留 2px 余量，
+// 否则解锁按钮底部 2px 会成为"点了没反应"的死区（悬浮判定已由全局鼠标流接管）。
+export const LOCK_HOTSPOT_HEIGHT = 44
 export const BUTTON_GROUP_HIDE_DELAY = 800
 export const MOUSE_IGNORE_DEBOUNCE_MS = 100
 
@@ -332,29 +334,6 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
     })
   }
 
-  // 锁定期间窗口 bounds 不会变（拖动/缩放均被锁定禁止），在锁定沿缓存一次即可。
-  // 全局鼠标流（屏幕坐标）+ bounds 判定锁定热区，不依赖穿透态下不可靠的窗口鼠标事件。
-  let lockWindowBounds: { x: number; y: number; width: number; height: number } | null = null
-  const refreshLockBounds = () => {
-    if (!api?.getWindowBounds) return
-    void Promise.resolve(api.getWindowBounds())
-      .then((bounds) => {
-        if (
-          bounds &&
-          Number.isFinite(bounds.x) &&
-          Number.isFinite(bounds.y) &&
-          Number.isFinite(bounds.width) &&
-          Number.isFinite(bounds.height)
-        ) {
-          lockWindowBounds = bounds
-        }
-      })
-      .catch((error: unknown) => {
-        console.warn('[ButtonGroup] 获取窗口边界失败，锁定悬浮恢复不可用（快捷键仍可解锁）:', error)
-      })
-  }
-
-  let wasLocked = false
   const controller = createButtonGroupState({
     hideDelayMs: options.hideDelayMs,
     mouseIgnoreDebounceMs: options.mouseIgnoreDebounceMs,
@@ -371,27 +350,21 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
       scaleButton.setAttribute('aria-pressed', String(snapshot.scaling))
       lockButton.setAttribute('aria-pressed', String(snapshot.locked))
       if (lockStatus) lockStatus.hidden = !snapshot.locked
-      if (snapshot.locked && !wasLocked) refreshLockBounds()
-      if (!snapshot.locked) lockWindowBounds = null
-      wasLocked = snapshot.locked
     },
   })
 
-  // 锁定热区由全局鼠标流驱动：穿透态下窗口 mousemove/mouseleave 会在光标
-  // 直接离开窗口区域时静默丢失，导致热区状态卡死、工具条常驻。
+  // 两种模式的热区判定统一由全局鼠标流驱动：窗口鼠标事件在穿透态、以及
+  // macOS 非焦点窗口快速移出时都会静默丢失，曾导致锁定/解锁态工具条双双常驻。
+  // main 每帧顺带推送窗口 bounds，屏幕坐标直接换算，无需额外 IPC。
+  // setHotspotActive 在锁定态被控制器忽略；setLockHotspotActive 仅在锁定态生效。
   const offGlobalMouse =
-    api?.onGlobalMouseMove?.((x, y) => {
-      if (!controller.isLocked() || !lockWindowBounds) return
-      const inLockStrip =
-        x >= lockWindowBounds.x &&
-        x < lockWindowBounds.x + lockWindowBounds.width &&
-        y >= lockWindowBounds.y &&
-        y < lockWindowBounds.y + LOCK_HOTSPOT_HEIGHT
-      controller.setLockHotspotActive(inLockStrip)
+    api?.onGlobalMouseMove?.((x, y, bounds) => {
+      if (!bounds) return
+      const overWindowX = x >= bounds.x && x < bounds.x + bounds.width
+      const relY = y - bounds.y
+      controller.setHotspotActive(overWindowX && relY >= 0 && relY <= BUTTON_HOTSPOT_HEIGHT)
+      controller.setLockHotspotActive(overWindowX && relY >= 0 && relY <= LOCK_HOTSPOT_HEIGHT)
     }) ?? null
-  if (api && !offGlobalMouse) {
-    console.warn('[ButtonGroup] preload 未暴露 onGlobalMouseMove，锁定悬浮恢复降级为快捷键解锁')
-  }
 
   const onPointerMove = (event: MouseEvent) => {
     controller.setHotspotActive(isTopHotspot(event, BUTTON_HOTSPOT_HEIGHT))
@@ -405,9 +378,14 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
     controller.setLocked(false)
   }
 
-  windowRef.addEventListener('pointermove', onPointerMove)
-  windowRef.addEventListener('pointerleave', onPointerLeave)
-  windowRef.addEventListener('mouseleave', onPointerLeave)
+  if (!offGlobalMouse) {
+    // 无全局流（web 预览/旧 preload）：退回窗口事件驱动按钮热区；
+    // 锁定悬浮恢复在此降级路径下不可用，仍可用快捷键解锁。
+    console.warn('[ButtonGroup] preload 未暴露 onGlobalMouseMove，热区退回窗口事件驱动')
+    windowRef.addEventListener('pointermove', onPointerMove)
+    windowRef.addEventListener('pointerleave', onPointerLeave)
+    windowRef.addEventListener('mouseleave', onPointerLeave)
+  }
   windowRef.addEventListener('keydown', onKeyDown)
 
   dragButton.addEventListener('click', () => controller.setDragging(!controller.isDragging()))

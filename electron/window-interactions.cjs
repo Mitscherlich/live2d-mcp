@@ -186,7 +186,13 @@ function createWindowInteractionController({
       if (!active || win.isDestroyed()) return
       const point = screen.getCursorScreenPoint()
       if (!isFiniteNumber(point?.x) || !isFiniteNumber(point?.y)) return
-      win.webContents.send(GLOBAL_MOUSE_MOVE_CHANNEL, { x: point.x, y: point.y })
+      // 顺带推送窗口 bounds：renderer 用它把屏幕坐标换算成窗口热区，
+      // 避免穿透态/非焦点下窗口鼠标事件丢失导致的热区状态卡死。
+      win.webContents.send(GLOBAL_MOUSE_MOVE_CHANNEL, {
+        x: point.x,
+        y: point.y,
+        bounds: normalizeBounds(win.getBounds()),
+      })
     }, GLOBAL_MOUSE_INTERVAL_MS)
 
     const stop = () => {

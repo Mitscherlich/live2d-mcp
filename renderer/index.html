@@ -234,13 +234,13 @@
         white-space: nowrap;
       }
 
-      /* ADR 0002 S3：锁定穿透时由 forwarded mousemove 触发恢复的不可见顶部热区。 */
+      /* ADR 0002 S3：锁定穿透时的不可见顶部热区（悬浮判定已由全局鼠标流接管，此处仅作占位）。 */
       #lock-hotspot {
         position: absolute;
         top: 0;
         left: 0;
         right: 0;
-        height: 40px;
+        height: 44px;
         z-index: 55;
         pointer-events: none;
         -webkit-app-region: no-drag;

@@ -141,7 +141,7 @@ test('锁定热区进入/离开以 100ms 防抖临时恢复或重新启用鼠标
     onMouseIgnoreChange: (ignore) => ignores.push(ignore),
   })
 
-  assert.equal(LOCK_HOTSPOT_HEIGHT, 40)
+  assert.equal(LOCK_HOTSPOT_HEIGHT, 44)
   assert.equal(MOUSE_IGNORE_DEBOUNCE_MS, 100)
   controller.setLocked(true)
   assert.deepEqual(ignores, [true])
@@ -267,7 +267,7 @@ test('index.html 使用纯 SVG 的四个圆形按钮并声明热区可见性样�
   assert.match(html, /transition: opacity 0\.2s ease-in-out/)
   assert.match(html, /#button-group[\s\S]*?-webkit-app-region: no-drag/)
   assert.match(html, /id="lock-hotspot"/)
-  assert.match(html, /#lock-hotspot[\s\S]*?height: 40px/)
+  assert.match(html, /#lock-hotspot[\s\S]*?height: 44px/)
   assert.match(html, /#lock-hotspot\.locked[\s\S]*?pointer-events: auto;/)
   assert.match(html, /#button-group\.locked[\s\S]*?opacity: 0;[\s\S]*?scale\(0\.84\)/)
   assert.match(html, /#button-group\.locked\.visible[\s\S]*?opacity: 1;/)

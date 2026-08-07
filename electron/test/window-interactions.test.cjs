@@ -266,7 +266,7 @@ test('全局鼠标轮询固定 33ms 推送有限屏幕坐标，窗口关闭即�
   intervals[0].callback()
   assert.deepEqual(win.sent.at(-1), {
     channel: GLOBAL_MOUSE_MOVE_CHANNEL,
-    payload: { x: 320, y: 240 },
+    payload: { x: 320, y: 240, bounds: { x: 100, y: 80, width: 600, height: 640 } },
   })
 
   screen.cursor = { x: Number.NaN, y: 1 }
