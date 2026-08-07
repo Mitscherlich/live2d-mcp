@@ -163,8 +163,15 @@
       }
 
       #button-group.locked.visible {
-        opacity: 0.58;
+        opacity: 1;
         pointer-events: auto;
+      }
+
+      /* 锁定态只展示解锁按钮，避免穿透窗上误触拖动/缩放/设置 */
+      #button-group.locked [data-action="drag"],
+      #button-group.locked [data-action="scale"],
+      #button-group.locked [data-action="settings"] {
+        display: none;
       }
 
       #button-group button {

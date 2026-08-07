@@ -70,6 +70,9 @@ export function createButtonGroupState(
   let hideTimer: unknown = null
   let mouseIgnoreTimer: unknown = null
   let mouseIgnored = false
+  // 锁定瞬间鼠标通常仍停在热区（刚点完锁定按钮）：抑制悬浮唤出，
+  // 直到全局鼠标流上报一次"离开热区"，避免点锁定后工具条立刻弹回。
+  let lockHoverSuppressed = false
 
   const clearHideTimer = () => {
     if (hideTimer === null) return
@@ -172,9 +175,16 @@ export function createButtonGroupState(
     }
     state.locked = locked
     state.lockHotspotActive = false
+    lockHoverSuppressed = locked
     if (locked) {
       state.dragging = false
       state.scaling = false
+      // 穿透后窗口鼠标事件不可靠，按钮热区状态可能滞留为 true，
+      // 导致眼神跟随被永久暂停；锁定时强制退出并广播一次。
+      if (state.inHotspot) {
+        state.inHotspot = false
+        for (const listener of hotspotListeners) listener(false)
+      }
       // 锁定时不立即显示，只有 hover 到热区时才显示
       hide()
     } else {
@@ -186,6 +196,11 @@ export function createButtonGroupState(
   }
 
   const setLockHotspotActive = (active: boolean) => {
+    // 抑制期（锁定瞬间鼠标已在热区）：忽略"进入"信号，直到一次"离开"解除。
+    if (state.locked && lockHoverSuppressed) {
+      if (active) return
+      lockHoverSuppressed = false
+    }
     if (state.lockHotspotActive === active) return
     state.lockHotspotActive = active
     if (state.locked) {
@@ -314,6 +329,29 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
     })
   }
 
+  // 锁定期间窗口 bounds 不会变（拖动/缩放均被锁定禁止），在锁定沿缓存一次即可。
+  // 全局鼠标流（屏幕坐标）+ bounds 判定锁定热区，不依赖穿透态下不可靠的窗口鼠标事件。
+  let lockWindowBounds: { x: number; y: number; width: number; height: number } | null = null
+  const refreshLockBounds = () => {
+    if (!api?.getWindowBounds) return
+    void Promise.resolve(api.getWindowBounds())
+      .then((bounds) => {
+        if (
+          bounds &&
+          Number.isFinite(bounds.x) &&
+          Number.isFinite(bounds.y) &&
+          Number.isFinite(bounds.width) &&
+          Number.isFinite(bounds.height)
+        ) {
+          lockWindowBounds = bounds
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn('[ButtonGroup] 获取窗口边界失败，锁定悬浮恢复不可用（快捷键仍可解锁）:', error)
+      })
+  }
+
+  let wasLocked = false
   const controller = createButtonGroupState({
     hideDelayMs: options.hideDelayMs,
     mouseIgnoreDebounceMs: options.mouseIgnoreDebounceMs,
@@ -330,16 +368,33 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
       scaleButton.setAttribute('aria-pressed', String(snapshot.scaling))
       lockButton.setAttribute('aria-pressed', String(snapshot.locked))
       if (lockStatus) lockStatus.hidden = !snapshot.locked
+      if (snapshot.locked && !wasLocked) refreshLockBounds()
+      if (!snapshot.locked) lockWindowBounds = null
+      wasLocked = snapshot.locked
     },
   })
 
+  // 锁定热区由全局鼠标流驱动：穿透态下窗口 mousemove/mouseleave 会在光标
+  // 直接离开窗口区域时静默丢失，导致热区状态卡死、工具条常驻。
+  const offGlobalMouse =
+    api?.onGlobalMouseMove?.((x, y) => {
+      if (!controller.isLocked() || !lockWindowBounds) return
+      const inLockStrip =
+        x >= lockWindowBounds.x &&
+        x < lockWindowBounds.x + lockWindowBounds.width &&
+        y >= lockWindowBounds.y &&
+        y < lockWindowBounds.y + LOCK_HOTSPOT_HEIGHT
+      controller.setLockHotspotActive(inLockStrip)
+    }) ?? null
+  if (api && !offGlobalMouse) {
+    console.warn('[ButtonGroup] preload 未暴露 onGlobalMouseMove，锁定悬浮恢复降级为快捷键解锁')
+  }
+
   const onPointerMove = (event: MouseEvent) => {
     controller.setHotspotActive(isTopHotspot(event, BUTTON_HOTSPOT_HEIGHT))
-    controller.setLockHotspotActive(isTopHotspot(event, LOCK_HOTSPOT_HEIGHT))
   }
   const onPointerLeave = () => {
     controller.setHotspotActive(false)
-    controller.setLockHotspotActive(false)
   }
   const onKeyDown = (event: KeyboardEvent) => {
     if (!isUnlockShortcut(event, api?.platform ?? 'web') || !controller.isLocked()) return
@@ -348,9 +403,6 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
   }
 
   windowRef.addEventListener('pointermove', onPointerMove)
-  // Electron 在 setIgnoreMouseEvents(true, { forward: true }) 时保证转发 mousemove，
-  // 但不保证 pointermove；两者都监听才能在穿透态发现顶部热区。
-  windowRef.addEventListener('mousemove', onPointerMove)
   windowRef.addEventListener('pointerleave', onPointerLeave)
   windowRef.addEventListener('mouseleave', onPointerLeave)
   windowRef.addEventListener('keydown', onKeyDown)
@@ -370,8 +422,8 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
 
   const originalDestroy = controller.destroy
   controller.destroy = () => {
+    offGlobalMouse?.()
     windowRef.removeEventListener('pointermove', onPointerMove)
-    windowRef.removeEventListener('mousemove', onPointerMove)
     windowRef.removeEventListener('pointerleave', onPointerLeave)
     windowRef.removeEventListener('mouseleave', onPointerLeave)
     windowRef.removeEventListener('keydown', onKeyDown)

@@ -110,6 +110,9 @@ test('锁定状态调用鼠标穿透回调、关闭拖动/缩放并默认隐藏'
   // 锁定时默认隐藏
   assert.equal(controller.isVisible(), false)
 
+  // 全局鼠标流持续上报：光标在热区外，先解除"锁定瞬间仍在热区"的抑制
+  controller.setLockHotspotActive(false)
+
   // 悬浮到热区时显示，防抖后临时恢复交互
   controller.setLockHotspotActive(true)
   assert.equal(controller.isVisible(), true)
@@ -140,6 +143,9 @@ test('锁定热区进入/离开以 100ms 防抖临时恢复或重新启用鼠标
   assert.equal(MOUSE_IGNORE_DEBOUNCE_MS, 100)
   controller.setLocked(true)
   assert.deepEqual(ignores, [true])
+
+  // 光标本就在热区外：全局鼠标流的首次"离开"上报解除锁定抑制
+  controller.setLockHotspotActive(false)
 
   controller.setLockHotspotActive(true)
   assert.equal(controller.isLockHotspotActive(), true)
@@ -173,6 +179,52 @@ test('解锁快捷键按平台选择 Command/Ctrl，且不要求热区状态', (
   assert.equal(isUnlockShortcut({ ...base, ctrlKey: true, key: 'L' }, 'linux'), true)
 })
 
+test('锁定瞬间鼠标仍在热区时抑制唤出，离开后再悬浮才显示', () => {
+  const timers = createManualTimers()
+  const controller = createButtonGroupState({
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+  })
+
+  controller.setLocked(true)
+  // 锁定瞬间鼠标仍停在热区（刚点完锁定按钮）：全局流持续上报"在热区"
+  controller.setLockHotspotActive(true)
+  controller.setLockHotspotActive(true)
+  assert.equal(controller.isLockHotspotActive(), false)
+  assert.equal(controller.isVisible(), false, '抑制期间不因悬浮信号唤出工具条')
+
+  // 鼠标离开热区 → 抑制解除
+  controller.setLockHotspotActive(false)
+  assert.equal(controller.isVisible(), false)
+
+  // 再次悬浮 → 正常唤出
+  controller.setLockHotspotActive(true)
+  assert.equal(controller.isLockHotspotActive(), true)
+  assert.equal(controller.isVisible(), true)
+
+  // 解锁后抑制标志清除，下次锁定重新生效
+  controller.setLocked(false)
+  controller.setLocked(true)
+  controller.setLockHotspotActive(true)
+  assert.equal(controller.isVisible(), false, '重新锁定后抑制再次生效')
+})
+
+test('锁定时强制退出按钮热区并广播，避免穿透态热区滞留暂停眼神跟随', () => {
+  const timers = createManualTimers()
+  const hotspotChanges: boolean[] = []
+  const controller = createButtonGroupState({
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+  })
+  controller.onHotspotChange((active) => hotspotChanges.push(active))
+
+  controller.setHotspotActive(true)
+  assert.equal(controller.isHotspotActive(), true)
+  controller.setLocked(true)
+  assert.equal(controller.isHotspotActive(), false)
+  assert.deepEqual(hotspotChanges, [true, false])
+})
+
 test('index.html 使用纯 SVG 的四个圆形按钮并声明热区可见性样式', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8')
   assert.equal((html.match(/<button type="button" data-action="(?:drag|scale|lock|settings)"/g) ?? []).length, 4)
@@ -187,6 +239,8 @@ test('index.html 使用纯 SVG 的四个圆形按钮并声明热区可见性样�
   assert.match(html, /#lock-hotspot[\s\S]*?height: 40px/)
   assert.match(html, /#lock-hotspot\.locked[\s\S]*?pointer-events: auto;/)
   assert.match(html, /#button-group\.locked[\s\S]*?opacity: 0;[\s\S]*?scale\(0\.84\)/)
-  assert.match(html, /#button-group\.locked\.visible[\s\S]*?opacity: 0\.58;/)
+  assert.match(html, /#button-group\.locked\.visible[\s\S]*?opacity: 1;/)
+  // 锁定态只展示解锁按钮
+  assert.match(html, /#button-group\.locked \[data-action="drag"\][\s\S]*?\[data-action="settings"\][\s\S]*?display: none;/)
   assert.match(html, /data-lock-status hidden>已锁定</)
 })
