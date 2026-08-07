@@ -173,6 +173,7 @@ test('index.html 使用纯 SVG 的四个圆形按钮并声明热区可见性样�
   assert.match(html, /id="lock-hotspot"/)
   assert.match(html, /#lock-hotspot[\s\S]*?height: 40px/)
   assert.match(html, /#lock-hotspot\.locked[\s\S]*?pointer-events: auto;/)
-  assert.match(html, /#button-group\.locked[\s\S]*?opacity: 0\.58;[\s\S]*?scale\(0\.84\)/)
+  assert.match(html, /#button-group\.locked[\s\S]*?opacity: 0;[\s\S]*?scale\(0\.84\)/)
+  assert.match(html, /#button-group\.locked\.visible[\s\S]*?opacity: 0\.58;/)
   assert.match(html, /data-lock-status hidden>已锁定</)
 })

@@ -147,7 +147,7 @@ export function createButtonGroupState(
 
   const setLocked = (locked: boolean) => {
     if (state.locked === locked) {
-      if (locked) show()
+      if (locked && state.lockHotspotActive) show()
       return
     }
     state.locked = locked
@@ -155,7 +155,8 @@ export function createButtonGroupState(
     if (locked) {
       state.dragging = false
       state.scaling = false
-      show()
+      // 锁定时不立即显示，只有 hover 到热区时才显示
+      hide()
     } else {
       scheduleHide()
     }
