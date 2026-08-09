@@ -9,8 +9,11 @@
 import * as PIXI from 'pixi.js'
 import { install as installPixiUnsafeEval } from '@pixi/unsafe-eval'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
+import { showModelLoadError } from './boot-error.js'
 
-// 必须在创建 PIXI.Application 之前 install
+// 模块加载期副作用（main.ts 动态 import 本模块时执行一次）：
+// 必须在创建 PIXI.Application 之前 install；Cubism Core 缺失时 pixi-live2d-display
+// 在此抛错，main.ts 捕获后落入缺模引导（FR-D3）。
 installPixiUnsafeEval(PIXI)
 
 // pixi-live2d-display 需要访问全局 PIXI，并用同一 Ticker 驱动 autoUpdate
@@ -142,14 +145,7 @@ export class Live2DApp {
       console.log('[Live2D] Model info:', this.modelInfo)
     } catch (e) {
       console.error('[Live2D] Failed to load model:', e)
-      const panel = document.getElementById('model-load-error')
-      if (panel) {
-        panel.style.display = 'block'
-        const detail = panel.querySelector('[data-error-detail]')
-        if (detail) {
-          detail.textContent = e instanceof Error ? e.message : String(e)
-        }
-      }
+      showModelLoadError(e)
       throw e
     }
   }

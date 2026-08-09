@@ -1,3 +1,7 @@
+// 注意：本模块被 Node（renderer/test/button-group.test.ts）经 type-stripping 直接加载，
+// import 必须写真文件名 `.ts`（Node 不做 .js→.ts 重映射），与 lip-sync.ts 同约定。
+import { isModifierPressed } from './desktop-interactions.ts'
+
 export const BUTTON_HOTSPOT_HEIGHT = 48
 // 按钮组实际占高 42px（top 8 + padding 4 + 按钮 26 + padding 4），锁定热区多留 2px 余量，
 // 否则解锁按钮底部 2px 会成为"点了没反应"的死区（悬浮判定已由全局鼠标流接管）。
@@ -14,7 +18,7 @@ export interface ButtonGroupSnapshot {
   lockHotspotActive: boolean
 }
 
-export interface ButtonGroupController {
+export interface ButtonGroupStateController {
   show(): void
   hide(): void
   isVisible(): boolean
@@ -29,8 +33,12 @@ export interface ButtonGroupController {
   setLockHotspotActive(active: boolean): void
   isLockHotspotActive(): boolean
   onHotspotChange(callback: (active: boolean) => void): () => void
-  containsTarget(target: EventTarget | null): boolean
   destroy(): void
+}
+
+/** DOM 适配后的完整控制器：containsTarget 需要 DOM，只有 initButtonGroup 能提供真实现 */
+export interface ButtonGroupController extends ButtonGroupStateController {
+  containsTarget(target: EventTarget | null): boolean
 }
 
 interface ButtonGroupStateOptions {
@@ -52,7 +60,7 @@ function snapshotOf(state: ButtonGroupSnapshot): ButtonGroupSnapshot {
  */
 export function createButtonGroupState(
   options: ButtonGroupStateOptions = {},
-): ButtonGroupController {
+): ButtonGroupStateController {
   const hideDelayMs = options.hideDelayMs ?? BUTTON_GROUP_HIDE_DELAY
   const mouseIgnoreDebounceMs = options.mouseIgnoreDebounceMs ?? MOUSE_IGNORE_DEBOUNCE_MS
   const schedule = options.schedule ?? ((callback, delayMs) => globalThis.setTimeout(callback, delayMs))
@@ -272,7 +280,6 @@ export function createButtonGroupState(
       hotspotListeners.add(callback)
       return () => hotspotListeners.delete(callback)
     },
-    containsTarget: () => false,
     destroy() {
       clearHideTimer()
       clearMouseIgnoreTimer()
@@ -288,16 +295,11 @@ interface ButtonGroupInitOptions {
   mouseIgnoreDebounceMs?: number
 }
 
-function isTopHotspot(event: { clientY: number }, height: number): boolean {
-  return Number.isFinite(event.clientY) && event.clientY >= 0 && event.clientY <= height
-}
-
 export function isUnlockShortcut(
   event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'shiftKey' | 'key'>,
   platform: string,
 ): boolean {
-  const modifier = platform === 'darwin' ? event.metaKey : event.ctrlKey
-  return modifier && event.shiftKey && event.key.toLowerCase() === 'l'
+  return isModifierPressed(event, platform) && event.shiftKey && event.key.toLowerCase() === 'l'
 }
 
 /** 初始化 DOM、hover 热区、四个按钮与 Electron 窄 API。 */
@@ -322,13 +324,15 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
   }
   const lockStatus = group.querySelector<HTMLElement>('[data-lock-status]')
   const lockHotspot = documentRef.getElementById('lock-hotspot')
+  // 渲染器只在 Electron 壳内运行（main.ts 启动期已断言）；此处再守一次是因为
+  // initButtonGroup 的 options 允许注入任意 window（测试/复用场景）。
   const api = windowRef.live2d
+  if (!api) {
+    console.warn('[ButtonGroup] preload 未暴露 window.live2d，按钮组不可用')
+    return null
+  }
 
   const invokeMouseIgnore = (ignore: boolean) => {
-    if (!api?.setMouseIgnore) {
-      console.warn('[ButtonGroup] preload 未暴露 setMouseIgnore')
-      return
-    }
     void Promise.resolve(api.setMouseIgnore(ignore)).catch((error: unknown) => {
       console.warn('[ButtonGroup] 设置窗口穿透失败:', error)
     })
@@ -357,34 +361,18 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
   // macOS 非焦点窗口快速移出时都会静默丢失，曾导致锁定/解锁态工具条双双常驻。
   // main 每帧顺带推送窗口 bounds，屏幕坐标直接换算，无需额外 IPC。
   // setHotspotActive 在锁定态被控制器忽略；setLockHotspotActive 仅在锁定态生效。
-  const offGlobalMouse =
-    api?.onGlobalMouseMove?.((x, y, bounds) => {
-      if (!bounds) return
-      const overWindowX = x >= bounds.x && x < bounds.x + bounds.width
-      const relY = y - bounds.y
-      controller.setHotspotActive(overWindowX && relY >= 0 && relY <= BUTTON_HOTSPOT_HEIGHT)
-      controller.setLockHotspotActive(overWindowX && relY >= 0 && relY <= LOCK_HOTSPOT_HEIGHT)
-    }) ?? null
+  const offGlobalMouse = api.onGlobalMouseMove((x, y, bounds) => {
+    if (!bounds) return
+    const overWindowX = x >= bounds.x && x < bounds.x + bounds.width
+    const relY = y - bounds.y
+    controller.setHotspotActive(overWindowX && relY >= 0 && relY <= BUTTON_HOTSPOT_HEIGHT)
+    controller.setLockHotspotActive(overWindowX && relY >= 0 && relY <= LOCK_HOTSPOT_HEIGHT)
+  })
 
-  const onPointerMove = (event: MouseEvent) => {
-    controller.setHotspotActive(isTopHotspot(event, BUTTON_HOTSPOT_HEIGHT))
-  }
-  const onPointerLeave = () => {
-    controller.setHotspotActive(false)
-  }
   const onKeyDown = (event: KeyboardEvent) => {
-    if (!isUnlockShortcut(event, api?.platform ?? 'web') || !controller.isLocked()) return
+    if (!isUnlockShortcut(event, api.platform) || !controller.isLocked()) return
     event.preventDefault()
     controller.setLocked(false)
-  }
-
-  if (!offGlobalMouse) {
-    // 无全局流（web 预览/旧 preload）：退回窗口事件驱动按钮热区；
-    // 锁定悬浮恢复在此降级路径下不可用，仍可用快捷键解锁。
-    console.warn('[ButtonGroup] preload 未暴露 onGlobalMouseMove，热区退回窗口事件驱动')
-    windowRef.addEventListener('pointermove', onPointerMove)
-    windowRef.addEventListener('pointerleave', onPointerLeave)
-    windowRef.addEventListener('mouseleave', onPointerLeave)
   }
   windowRef.addEventListener('keydown', onKeyDown)
 
@@ -392,31 +380,24 @@ export function initButtonGroup(options: ButtonGroupInitOptions = {}): ButtonGro
   scaleButton.addEventListener('click', () => controller.setScaling(!controller.isScaling()))
   lockButton.addEventListener('click', () => controller.setLocked(!controller.isLocked()))
   settingsButton.addEventListener('click', () => {
-    if (!api?.openSettings) {
-      console.warn('[ButtonGroup] preload 未暴露 openSettings')
-      return
-    }
     void Promise.resolve(api.openSettings()).catch((error: unknown) => {
       console.warn('[ButtonGroup] 打开设置窗失败:', error)
     })
   })
 
-  const originalDestroy = controller.destroy
-  controller.destroy = () => {
-    offGlobalMouse?.()
-    windowRef.removeEventListener('pointermove', onPointerMove)
-    windowRef.removeEventListener('pointerleave', onPointerLeave)
-    windowRef.removeEventListener('mouseleave', onPointerLeave)
-    windowRef.removeEventListener('keydown', onKeyDown)
-    originalDestroy()
-  }
-  controller.containsTarget = (target) =>
+  const containsTarget = (target: EventTarget | null): boolean =>
     target !== null && typeof group.contains === 'function' && group.contains(target as Node)
+
+  const destroy = () => {
+    offGlobalMouse()
+    windowRef.removeEventListener('keydown', onKeyDown)
+    controller.destroy()
+  }
 
   // 初始隐藏状态也要同步到 DOM。
   group.classList.remove('visible', 'locked')
   group.setAttribute('aria-hidden', 'true')
   lockHotspot?.classList.remove('locked')
   lockStatus?.setAttribute('hidden', '')
-  return controller
+  return { ...controller, containsTarget, destroy }
 }
