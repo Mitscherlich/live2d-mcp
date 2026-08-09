@@ -30,6 +30,7 @@
 
 const http = require('node:http')
 const { normalizeVoiceEvent } = require('./voice-events.cjs')
+const { DEFAULT_PORT, LOOPBACK_HOST } = require('./bridge-endpoint.cjs')
 const {
   JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_PARSE_ERROR,
@@ -38,8 +39,6 @@ const {
   sendJsonRpcError,
 } = require('./mcp-protocol.cjs')
 
-const DEFAULT_PORT = 47832
-const LOOPBACK_HOST = '127.0.0.1'
 const MAX_BODY_BYTES = 64 * 1024
 const MCP_METHODS = new Set(['POST', 'GET', 'DELETE'])
 
@@ -72,17 +71,6 @@ function hostAllowed(hostHeader) {
  */
 function originAllowed(origin) {
   return origin == null || (typeof origin === 'string' && TRUSTED_ORIGIN.test(origin))
-}
-
-/**
- * 解析 LIVE2D_BRIDGE_PORT：合法返回 1-65535 整数，非法/缺失返回 null（调用方回退默认）。
- * @param {unknown} raw env 原值
- */
-function resolveBridgePort(raw) {
-  if (raw === undefined || raw === null || raw === '') return null
-  const port = Number(raw)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
-  return port
 }
 
 function sendJson(response, status, body, extraHeaders = {}) {
@@ -336,11 +324,8 @@ function createBridgeServer({ host = LOOPBACK_HOST, port = DEFAULT_PORT, onEvent
 }
 
 module.exports = {
-  DEFAULT_PORT,
-  LOOPBACK_HOST,
   MAX_BODY_BYTES,
   createBridgeServer,
   hostAllowed,
   originAllowed,
-  resolveBridgePort,
 }

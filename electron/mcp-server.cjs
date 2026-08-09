@@ -81,10 +81,10 @@ function errorResult(payload) {
  * 调用 renderer 命令类 controller 回调并规范化为工具结果。
  * controller 约定返回 { ok:boolean, data?, error? }；ok:false → isError 降级文本。
  */
-async function commandResult(call, successPayload) {
+async function commandResult(call, successPayload, fallbackError = 'renderer 未就绪或命令未执行') {
   const result = await call()
   if (!result || result.ok !== true) {
-    const message = result?.error ?? 'renderer 未就绪或命令未执行'
+    const message = result?.error ?? fallbackError
     return errorResult({ success: false, error: message })
   }
   return jsonResult({ success: true, ...successPayload(result) })
@@ -166,16 +166,12 @@ function createLive2dMcpServer(controller) {
         openWorldHint: false,
       },
     },
-    async () => {
-      const result = await controller.getModelInfo()
-      if (!result || result.ok !== true) {
-        return errorResult({
-          success: false,
-          error: result?.error ?? '模型未加载',
-        })
-      }
-      return jsonResult({ success: true, modelInfo: result.data ?? null })
-    },
+    async () =>
+      commandResult(
+        () => controller.getModelInfo(),
+        (result) => ({ modelInfo: result.data ?? null }),
+        '模型未加载',
+      ),
   )
 
   server.registerTool(

@@ -4,10 +4,10 @@
 
 const {
   DEFAULT_PORT,
-  LOOPBACK_HOST,
+  buildCodexMcpCommand,
+  mcpHttpUrl,
   resolveBridgePort,
-} = require('./bridge-server.cjs')
-const { MCP_PATH } = require('./mcp-protocol.cjs')
+} = require('./bridge-endpoint.cjs')
 
 function configuredBridgePort(environment = process.env) {
   return resolveBridgePort(environment?.LIVE2D_BRIDGE_PORT) ?? DEFAULT_PORT
@@ -17,11 +17,7 @@ function buildMcpUrl({ actualPort, environment = process.env } = {}) {
   const port = Number.isInteger(actualPort) && actualPort > 0
     ? actualPort
     : configuredBridgePort(environment)
-  return `http://${LOOPBACK_HOST}:${port}${MCP_PATH}`
-}
-
-function buildCodexMcpCommand(mcpUrl) {
-  return `codex mcp add live2d --url ${mcpUrl}`
+  return mcpHttpUrl(port)
 }
 
 function buildSettingsViewModel({
@@ -43,7 +39,6 @@ function buildSettingsViewModel({
 }
 
 module.exports = {
-  buildCodexMcpCommand,
   buildMcpUrl,
   buildSettingsViewModel,
   configuredBridgePort,

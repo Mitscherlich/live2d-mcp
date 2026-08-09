@@ -17,6 +17,8 @@
  * 纯函数、无 Electron 依赖：node:test 直测（NFR-3）。
  */
 
+const { clamp01Lenient } = require('./protocol-utils.cjs')
+
 const LISTENER_STATUSES = Object.freeze([
   'disabled',
   'starting',
@@ -43,7 +45,7 @@ function truncateError(value) {
 
 function roundLevel(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
-  return Math.round(Math.min(1, Math.max(0, value)) * 10000) / 10000
+  return Math.round(clamp01Lenient(value) * 10000) / 10000
 }
 
 /**

@@ -17,6 +17,7 @@
  */
 
 const { randomUUID } = require('node:crypto')
+const { isWindowSender } = require('./protocol-utils.cjs')
 const {
   COMMAND_CHANNEL,
   COMMAND_RESULT_CHANNEL,
@@ -66,8 +67,7 @@ function createRendererCommandChannel({
 
   /** 只认当前角色窗的 webContents，挡掉设置窗/残留窗口/伪造 sender */
   function isTargetSender(event) {
-    const win = liveWindow()
-    return Boolean(win && event?.sender === win.webContents)
+    return isWindowSender(event, liveWindow())
   }
 
   /** 冲销一条挂起命令（清超时器并出表），返回其 resolve */

@@ -21,14 +21,7 @@ const VOICE_INJECT_CHANNEL = 'live2d:voice-inject'
 const VALID_PHASES = new Set(['inactive', 'starting', 'active', 'stopping'])
 const VALID_ACTIVITIES = new Set(['idle', 'listening', 'speaking'])
 
-function clamp01(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null
-  return Math.min(1, Math.max(0, value))
-}
-
-function isPlainObject(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+const { clamp01, isPlainObject } = require('./protocol-utils.cjs')
 
 function normalizeStatePayload(rawState) {
   if (!isPlainObject(rawState)) return null

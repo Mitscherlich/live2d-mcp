@@ -3,11 +3,11 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
-  buildCodexMcpCommand,
   buildMcpUrl,
   buildSettingsViewModel,
   configuredBridgePort,
 } = require('../settings-view.cjs')
+const { buildCodexMcpCommand } = require('../bridge-endpoint.cjs')
 
 test('MCP URL 优先反映 bridge 实际监听端口', () => {
   assert.equal(

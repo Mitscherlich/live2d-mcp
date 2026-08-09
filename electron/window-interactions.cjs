@@ -7,7 +7,13 @@
  * 模块不直接 require Electron，便于用 fake ipcMain / BrowserWindow 真实覆盖每个端点。
  */
 
-const { sanitizeWindowState } = require('./settings-store.cjs')
+const { isFiniteNumber, isWindowSender } = require('./protocol-utils.cjs')
+const {
+  DEFAULT_WINDOW_SCALE,
+  clamp,
+  normalizeScale,
+  sanitizeWindowState,
+} = require('./window-state.cjs')
 
 const MOVE_WINDOW_CHANNEL = 'live2d:move-window'
 const GET_WINDOW_BOUNDS_CHANNEL = 'live2d:get-window-bounds'
@@ -20,24 +26,7 @@ const OPEN_SETTINGS_CHANNEL = 'live2d:open-settings'
 
 const MIN_VISIBLE_WIDTH = 80
 const MIN_VISIBLE_HEIGHT = 40
-const MIN_WINDOW_SCALE = 0.5
-const MAX_WINDOW_SCALE = 1.75
-const DEFAULT_WINDOW_SCALE = 1
 const GLOBAL_MOUSE_INTERVAL_MS = 33
-
-function isFiniteNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value))
-}
-
-function normalizeScale(value) {
-  if (!isFiniteNumber(value)) throw new TypeError('缩放值非法：必须是有限数')
-  const clamped = clamp(value, MIN_WINDOW_SCALE, MAX_WINDOW_SCALE)
-  return Math.round(clamped * 100) / 100
-}
 
 function normalizeBounds(bounds) {
   const values = [bounds?.x, bounds?.y, bounds?.width, bounds?.height]
@@ -109,7 +98,7 @@ function createWindowInteractionController({
 
   function requireAvatarSender(event) {
     const win = getWindow()
-    if (!win || win.isDestroyed() || event?.sender !== win.webContents) {
+    if (!isWindowSender(event, win)) {
       throw new Error('窗口交互 IPC sender 非法')
     }
     return win
@@ -257,6 +246,7 @@ function createWindowInteractionController({
 
   return {
     getWindowScale: () => windowScale,
+    getWindowState,
     register,
     restoreWindowState,
     setWindowScale,
@@ -277,9 +267,6 @@ module.exports = {
   OPEN_SETTINGS_CHANNEL,
   MIN_VISIBLE_WIDTH,
   MIN_VISIBLE_HEIGHT,
-  MIN_WINDOW_SCALE,
-  MAX_WINDOW_SCALE,
-  DEFAULT_WINDOW_SCALE,
   GLOBAL_MOUSE_INTERVAL_MS,
   createWindowInteractionController,
 }

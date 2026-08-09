@@ -28,9 +28,7 @@ const COMMAND_TYPES = new Set([
   'reset',
 ])
 
-function isPlainObject(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+const { isPlainObject } = require('./protocol-utils.cjs')
 
 function isCommandType(type) {
   return typeof type === 'string' && COMMAND_TYPES.has(type)

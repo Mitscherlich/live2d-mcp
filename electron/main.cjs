@@ -61,18 +61,21 @@ const {
 } = require('./voice-events.cjs')
 const {
   DEFAULT_PORT: BRIDGE_DEFAULT_PORT,
-  LOOPBACK_HOST: BRIDGE_HOST,
-  createBridgeServer,
+  bridgeHttpUrl,
+  buildCodexMcpCommand,
+  mcpHttpUrl,
   resolveBridgePort,
-} = require('./bridge-server.cjs')
+} = require('./bridge-endpoint.cjs')
+const { createBridgeServer } = require('./bridge-server.cjs')
 const { createRendererCommandChannel } = require('./renderer-command-channel.cjs')
+const { isWindowSender } = require('./protocol-utils.cjs')
 const { MCP_PATH } = require('./mcp-protocol.cjs')
 const { createLive2dMcpHandler } = require('./mcp-server.cjs')
 const { resolveVoiceSourceConfig } = require('./voice-source.cjs')
 const { createAudioListener } = require('./audio-listener.cjs')
 const { buildListenerSummary } = require('./listener-status.cjs')
+const { DEFAULT_WINDOW_STATE } = require('./window-state.cjs')
 const {
-  DEFAULT_WINDOW_STATE,
   createSettingsStore,
   defaultSettings,
 } = require('./settings-store.cjs')
@@ -159,10 +162,7 @@ let persistedSettings = defaultSettings()
 function currentAvatarWindowState() {
   if (!avatarWindow || avatarWindow.isDestroyed()) return null
   if (!windowInteractionController) return null
-  return {
-    ...avatarWindow.getBounds(),
-    scale: windowInteractionController.getWindowScale(),
-  }
+  return windowInteractionController.getWindowState(avatarWindow)
 }
 
 function persistWindowState(state = currentAvatarWindowState()) {
@@ -547,11 +547,7 @@ function createAppTray() {
 }
 
 function isSettingsSender(event) {
-  return Boolean(
-    settingsWindow &&
-    !settingsWindow.isDestroyed() &&
-    event.sender === settingsWindow.webContents,
-  )
+  return isWindowSender(event, settingsWindow)
 }
 
 /**
@@ -675,7 +671,7 @@ function mcpEndpointSummary(port) {
   return {
     path: MCP_PATH,
     implemented: true,
-    url: port === null ? null : `http://${BRIDGE_HOST}:${port}${MCP_PATH}`,
+    url: port === null ? null : mcpHttpUrl(port),
   }
 }
 
@@ -736,7 +732,7 @@ async function mcpStatus() {
     windowVisible: avatarWindowVisible(),
     bridge: {
       port,
-      url: port === null ? null : `http://${BRIDGE_HOST}:${port}`,
+      url: port === null ? null : bridgeHttpUrl(port),
     },
     voice: bridge?.getVoiceSummary() ?? null,
     listener: listenerSummary(),
@@ -773,7 +769,6 @@ async function startBridge() {
   const port = envPort ?? BRIDGE_DEFAULT_PORT
   mcpHandler = createLive2dMcpHandler(mcpController)
   bridge = createBridgeServer({
-    host: BRIDGE_HOST,
     port,
     onEvent: (event) => sendVoiceEvent(avatarWindow, event),
     getHealth: bridgeHealthExtra,
@@ -781,9 +776,9 @@ async function startBridge() {
   })
   try {
     const address = await bridge.listen()
-    console.log(`[live2d] bridge 已监听（仅 loopback）: http://${BRIDGE_HOST}:${address.port}/health 与 /events`)
-    console.log(`[live2d] MCP Streamable HTTP 已就绪: http://${BRIDGE_HOST}:${address.port}${MCP_PATH}`)
-    console.log(`[live2d] MCP 连接示例: codex mcp add live2d --url http://${BRIDGE_HOST}:${address.port}${MCP_PATH}`)
+    console.log(`[live2d] bridge 已监听（仅 loopback）: ${bridgeHttpUrl(address.port)}/health 与 /events`)
+    console.log(`[live2d] MCP Streamable HTTP 已就绪: ${mcpHttpUrl(address.port)}`)
+    console.log(`[live2d] MCP 连接示例: ${buildCodexMcpCommand(mcpHttpUrl(address.port))}`)
     notifySettingsChanged()
   } catch (error) {
     bridge = null
