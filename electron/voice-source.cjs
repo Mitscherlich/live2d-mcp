@@ -141,13 +141,6 @@ function processIdentity(proc, platform) {
   return normalizeProcessIdentity(proc?.executable || proc?.name, platform)
 }
 
-function processSourceId(platform, proc) {
-  // TODO(win32): 允许生成 win32 source id 仅为形状对齐；Windows 捕获链路尚未实现
-  if (!['darwin', 'win32'].includes(platform)) return null
-  const identity = processIdentity(proc, platform)
-  return identity ? `process:${platform}:${encodeIdentity(identity)}` : null
-}
-
 /**
  * 从 source_id 解出目标进程 identity（解码一次，供逐进程比较）。
  * 形状非法、平台不符或解码为空 → null（调用方视作不匹配任何进程）。
@@ -159,15 +152,6 @@ function voiceSourceIdentity(sourceId, platform) {
   const identity = decodeIdentity(match[2])
   if (!identity?.trim()) return null
   return normalizeProcessIdentity(identity, platform)
-}
-
-/**
- * 单进程匹配。批量匹配（进程快照逐个比对）请先用 voiceSourceIdentity 解一次
- * 目标 identity 再比 processIdentity —— 否则每个进程都要做一次 base64 编码。
- */
-function processMatchesSource(proc, platform, sourceId) {
-  const target = voiceSourceIdentity(sourceId, platform)
-  return target !== null && processIdentity(proc, platform) === target
 }
 
 // ------------------------------------------------------------- env 配置解析
@@ -291,8 +275,6 @@ module.exports = {
   isValidVoiceSourceId,
   normalizeVoiceSource,
   processIdentity,
-  processMatchesSource,
-  processSourceId,
   resolveVoiceSourceConfig,
   resolveVoiceSourceFromEnv,
   resolveVoiceSourcePattern,

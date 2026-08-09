@@ -19,7 +19,6 @@ const {
 const {
   DEFAULT_VOICE_APP_PATTERN,
   encodeIdentity,
-  processSourceId,
 } = require('../voice-source.cjs')
 
 const PS_COMM = `  1     0 /sbin/launchd
@@ -105,8 +104,7 @@ test('selectVoiceProcessTree：排除自身 pid；无匹配返回空', () => {
 test('selectVoiceProcessTree：application 模式按 source_id 精确匹配（忽略 regex）', () => {
   const processes = parseMacProcessList(PS_COMM)
   const target = processes[1] // ChatGPT
-  const id = processSourceId('darwin', target)
-  assert.equal(id, `process:darwin:${encodeIdentity(target.executable)}`)
+  const id = `process:darwin:${encodeIdentity(target.executable)}`
   const { pids, rootPids } = selectVoiceProcessTree(processes, {
     ownProcessId: 999,
     sourceId: id,
