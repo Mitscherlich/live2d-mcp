@@ -29,44 +29,71 @@ function sanitizeSettings(value) {
   }
 }
 
-function createSettingsStore({ filePath }) {
-  if (typeof filePath !== 'string' || !filePath) {
-    throw new TypeError('settings store filePath 必填')
+/**
+ * 设置存储（带内存缓存的唯一真值）。load() 后 `current` 恒为最近一份合法
+ * settings；save* 系原子落盘并同步缓存。调用方不再自持 settings 副本。
+ */
+class SettingsStore {
+  constructor({ filePath }) {
+    if (typeof filePath !== 'string' || !filePath) {
+      throw new TypeError('settings store filePath 必填')
+    }
+    this.filePath = filePath
+    this._current = defaultSettings()
   }
 
-  return {
-    filePath,
-    load() {
-      if (!fs.existsSync(filePath)) return { settings: defaultSettings(), warnings: [] }
-      try {
-        const settings = sanitizeSettings(JSON.parse(fs.readFileSync(filePath, 'utf8')))
-        return { settings, warnings: [] }
-      } catch (error) {
-        return {
-          settings: defaultSettings(),
-          warnings: [`设置读取失败，已回退 automatic：${error instanceof Error ? error.message : String(error)}`],
-        }
+  /** 最近一份合法 settings（未 load 时为默认） */
+  get current() {
+    return this._current
+  }
+
+  load() {
+    if (!fs.existsSync(this.filePath)) {
+      this._current = defaultSettings()
+      return { settings: this._current, warnings: [] }
+    }
+    try {
+      this._current = sanitizeSettings(JSON.parse(fs.readFileSync(this.filePath, 'utf8')))
+      return { settings: this._current, warnings: [] }
+    } catch (error) {
+      this._current = defaultSettings()
+      return {
+        settings: this._current,
+        warnings: [`设置读取失败，已回退 automatic：${error instanceof Error ? error.message : String(error)}`],
       }
-    },
-    save(value) {
-      const settings = sanitizeSettings(value)
-      const directory = path.dirname(filePath)
-      fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-      const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-      try {
-        fs.writeFileSync(tempPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
-        fs.renameSync(tempPath, filePath)
-      } finally {
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
-      }
-      return settings
-    },
+    }
+  }
+
+  /** 全量替换语义：sanitize → 原子落盘 → 更新缓存，返回落盘的 settings */
+  save(value) {
+    const settings = sanitizeSettings(value)
+    const directory = path.dirname(this.filePath)
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`
+    try {
+      fs.writeFileSync(tempPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
+      fs.renameSync(tempPath, this.filePath)
+    } finally {
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
+    }
+    this._current = settings
+    return settings
+  }
+
+  /** 只更新窗口状态（保留其余字段） */
+  saveWindowState(state) {
+    return this.save({ ...this._current, window: state })
+  }
+
+  /** 只更新 voice source（保留其余字段） */
+  saveVoiceSource(voiceSource) {
+    return this.save({ ...this._current, voiceSource })
   }
 }
 
 module.exports = {
   SETTINGS_VERSION,
-  createSettingsStore,
+  SettingsStore,
   defaultSettings,
   sanitizeSettings,
 }

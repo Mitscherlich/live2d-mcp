@@ -67,18 +67,15 @@ const {
   resolveBridgePort,
 } = require('./bridge-endpoint.cjs')
 const { createBridgeServer } = require('./bridge-server.cjs')
-const { createRendererCommandChannel } = require('./renderer-command-channel.cjs')
+const { RendererCommandChannel } = require('./renderer-command-channel.cjs')
 const { isWindowSender } = require('./protocol-utils.cjs')
 const { MCP_PATH } = require('./mcp-protocol.cjs')
-const { createLive2dMcpHandler } = require('./mcp-server.cjs')
+const { McpSessionManager } = require('./mcp-server.cjs')
 const { resolveVoiceSourceConfig } = require('./voice-source.cjs')
-const { createAudioListener } = require('./audio-listener.cjs')
 const { buildListenerSummary } = require('./listener-status.cjs')
+const { VoiceListenerManager } = require('./voice-listener-manager.cjs')
 const { DEFAULT_WINDOW_STATE } = require('./window-state.cjs')
-const {
-  createSettingsStore,
-  defaultSettings,
-} = require('./settings-store.cjs')
+const { SettingsStore, defaultSettings } = require('./settings-store.cjs')
 const { buildSettingsViewModel } = require('./settings-view.cjs')
 const {
   SETTINGS_GET_CHANNEL,
@@ -87,10 +84,10 @@ const {
   SETTINGS_CHANGED_CHANNEL,
 } = require('./settings-channels.cjs')
 const {
-  createTrayController,
+  TrayController,
   shouldQuitAfterAllWindowsClosed,
 } = require('./tray.cjs')
-const { createWindowInteractionController } = require('./window-interactions.cjs')
+const { WindowInteractionController } = require('./window-interactions.cjs')
 
 const WINDOW_WIDTH = DEFAULT_WINDOW_STATE.width
 const WINDOW_HEIGHT = DEFAULT_WINDOW_STATE.height
@@ -157,7 +154,6 @@ let settingsWindow = null
 let tray = null
 let isQuitting = false
 let settingsStore = null
-let persistedSettings = defaultSettings()
 
 function currentAvatarWindowState() {
   if (!avatarWindow || avatarWindow.isDestroyed()) return null
@@ -168,10 +164,7 @@ function currentAvatarWindowState() {
 function persistWindowState(state = currentAvatarWindowState()) {
   if (!settingsStore || !state) return
   try {
-    persistedSettings = settingsStore.save({
-      ...persistedSettings,
-      window: state,
-    })
+    settingsStore.saveWindowState(state)
   } catch (error) {
     console.error(`[live2d] 窗口状态保存失败：${error instanceof Error ? error.message : String(error)}`)
   }
@@ -196,31 +189,33 @@ function sendRendererCommand(type, params) {
 
 // -------------------------------------------------------- F6/F7 voice settings
 
-let voiceSourceConfig = resolveVoiceSourceConfig(process.env, persistedSettings.voiceSource)
-let audioListener = null
-let nativeListenerStatus = null
-let listenerLastLevel = null
+/** @type {VoiceListenerManager|null} voice listener 编排（whenReady 初始化） */
+let voiceListenerManager = null
 
 /** /health 与 MCP get_status 共用的 listener 真值摘要。 */
 function listenerSummary() {
+  if (voiceListenerManager) return voiceListenerManager.summary()
+  // whenReady 之前的启动早期：维持与 manager 相同的解析语义（env + 默认 source）
   return buildListenerSummary({
-    mode: voiceSourceConfig.source.mode,
+    mode: resolveVoiceSourceConfig(process.env, defaultSettings().voiceSource).source.mode,
     platform: process.platform,
-    native: nativeListenerStatus,
-    lastLevel: listenerLastLevel,
+    native: null,
+    lastLevel: null,
   })
 }
 
 function settingsViewModel(message = '') {
+  const voiceConfig = voiceListenerManager?.config ??
+    resolveVoiceSourceConfig(process.env, defaultSettings().voiceSource)
   return {
     ...buildSettingsViewModel({
       actualPort: bridgePort(),
       environment: process.env,
-      voiceSource: persistedSettings.voiceSource,
+      voiceSource: settingsStore.current.voiceSource,
       listener: listenerSummary(),
-      environmentOverridesVoice: voiceSourceConfig.environmentOverridesVoice,
+      environmentOverridesVoice: voiceConfig.environmentOverridesVoice,
     }),
-    effectiveVoiceSource: { ...voiceSourceConfig.source },
+    effectiveVoiceSource: { ...voiceConfig.source },
     message,
   }
 }
@@ -230,97 +225,9 @@ function notifySettingsChanged(message = '') {
   settingsWindow.webContents.send(SETTINGS_CHANGED_CHANNEL, settingsViewModel(message))
 }
 
-function stopAudioListener() {
-  const listener = audioListener
-  audioListener = null
-  listener?.stop()
-  nativeListenerStatus = null
-  listenerLastLevel = null
-}
-
-/**
- * native listener 契约 → F3/F4 权威 voice 事件入口。
- * session 开启先进入 active/listening；listening ⇄ speaking 由 renderer 的
- * VoiceStateMachine 从同一条 level 流推导（main 侧不再重复推一遍）。
- */
-function startAudioListener() {
-  for (const warning of voiceSourceConfig.warnings) {
-    console.warn(`[live2d] voice source 配置：${warning}`)
-  }
-
-  const listener = createAudioListener({
-    platform: process.platform,
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    environment: process.env,
-    voiceSource: voiceSourceConfig.source,
-    processPattern: voiceSourceConfig.pattern,
-    onSession: (active) => {
-      if (audioListener !== listener) return
-      sendVoiceEvent(avatarWindow, {
-        type: 'state',
-        state: active
-          ? { phase: 'active', activity: 'listening' }
-          : { phase: 'inactive', activity: 'idle' },
-      })
-    },
-    onLevel: (level) => {
-      if (audioListener !== listener) return
-      listenerLastLevel = level
-      // 调试：仅打印「助手出声」相关的非静音电平（Codex 播放，非用户麦克风）
-      if (process.env.LIVE2D_LISTENER_DEBUG === '1' && level > 0.01) {
-        console.log(`[live2d] native assistant level=${level.toFixed(3)}`)
-      }
-      sendVoiceEvent(avatarWindow, { type: 'audio-level', level })
-    },
-    onStatus: (status) => {
-      if (audioListener !== listener) return
-      nativeListenerStatus = status
-      const summary = listenerSummary()
-      console.log(
-        `[live2d] voice listener: ${summary.mode}/${summary.status}` +
-          `${summary.detail ? ` (${summary.detail})` : ''}` +
-          `${summary.lastLevel != null ? ` lastLevel=${summary.lastLevel}` : ''}` +
-          `${summary.matched != null ? ` matched=${summary.matched}` : ''}`,
-      )
-      notifySettingsChanged()
-    },
-    onDebug: (message, detail) => {
-      if (process.env.LIVE2D_LISTENER_DEBUG === '1') {
-        console.warn(`[live2d] ${message}: ${String(detail).trim().slice(0, 500)}`)
-      }
-    },
-  })
-
-  audioListener = listener
-
-  if (!listener) {
-    const summary = listenerSummary()
-    console.log(`[live2d] voice listener: ${summary.mode}/${summary.status}${summary.detail ? ` (${summary.detail})` : ''}`)
-    return
-  }
-
-  void listener.start().catch((error) => {
-    if (audioListener !== listener) return
-    nativeListenerStatus = {
-      available: false,
-      capturing: false,
-      monitoring: false,
-      source: null,
-      matched: 0,
-      detail: 'startup-failed',
-      error: error instanceof Error ? error.message : String(error),
-      permissionHint: null,
-    }
-    console.error(`[live2d] voice listener 启动失败：${nativeListenerStatus.error}`)
-  })
-}
-
 function applyPersistedVoiceSource(message = '设置已保存，voice listener 已热更新。') {
-  stopAudioListener()
-  voiceSourceConfig = resolveVoiceSourceConfig(process.env, persistedSettings.voiceSource)
-  startAudioListener()
-  const effectiveMessage = voiceSourceConfig.environmentOverridesVoice
+  voiceListenerManager.applyPersisted(settingsStore.current.voiceSource)
+  const effectiveMessage = voiceListenerManager.config.environmentOverridesVoice
     ? '设置已保存；LIVE2D_* 环境变量仍优先，移除覆盖并重启后才会采用该值。'
     : message
   notifySettingsChanged(effectiveMessage)
@@ -368,7 +275,7 @@ function createWindow() {
   if (avatarWindow && !avatarWindow.isDestroyed()) return avatarWindow
 
   const url = rendererUrl()
-  const savedWindow = persistedSettings.window ?? DEFAULT_WINDOW_STATE
+  const savedWindow = settingsStore.current.window ?? DEFAULT_WINDOW_STATE
   const win = new BrowserWindow({
     width: savedWindow.width,
     height: savedWindow.height,
@@ -527,7 +434,7 @@ function createSettingsWindow() {
 
 function createAppTray() {
   if (tray && !tray.isDestroyed()) return tray
-  tray = createTrayController({
+  tray = new TrayController({
     Tray,
     Menu,
     nativeImage,
@@ -567,7 +474,7 @@ function registerIpcHandlers() {
     if (!isSettingsSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
     if (!settingsStore) return { ok: false, error: '设置存储尚未就绪' }
     try {
-      persistedSettings = settingsStore.save({ ...persistedSettings, voiceSource })
+      settingsStore.saveVoiceSource(voiceSource)
       const message = applyPersistedVoiceSource()
       return { ok: true, view: settingsViewModel(message) }
     } catch (error) {
@@ -619,7 +526,7 @@ if (!gotSingleInstanceLock) {
     }
 
     // 初始化窗口交互控制器（需要在 app ready 后，因为依赖 screen 模块）
-    windowInteractionController = createWindowInteractionController({
+    windowInteractionController = new WindowInteractionController({
       ipcMain,
       screen,
       getWindow: () => avatarWindow,
@@ -628,19 +535,25 @@ if (!gotSingleInstanceLock) {
     })
 
     // 初始化渲染器命令通道
-    rendererCommandChannel = createRendererCommandChannel({
+    rendererCommandChannel = new RendererCommandChannel({
       ipcMain,
       getWindow: () => avatarWindow,
     })
 
-    settingsStore = createSettingsStore({
+    settingsStore = new SettingsStore({
       filePath: path.join(app.getPath('userData'), 'settings.json'),
     })
-    const loadedSettings = settingsStore.load()
-    persistedSettings = loadedSettings.settings
-    windowInteractionController.setWindowScale(persistedSettings.window.scale, { notify: false })
-    voiceSourceConfig = resolveVoiceSourceConfig(process.env, persistedSettings.voiceSource)
-    for (const warning of loadedSettings.warnings) console.warn(`[live2d] ${warning}`)
+    const { warnings: settingsWarnings } = settingsStore.load()
+    windowInteractionController.setWindowScale(settingsStore.current.window.scale, { notify: false })
+    for (const warning of settingsWarnings) console.warn(`[live2d] ${warning}`)
+    voiceListenerManager = new VoiceListenerManager({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      environment: process.env,
+      onVoiceEvent: (event) => sendVoiceEvent(avatarWindow, event),
+      onStatusChanged: () => notifySettingsChanged(),
+    })
     console.log(`[live2d] 启动模式: ${isDev ? `dev（${DEV_SERVER_URL}）` : 'prod（renderer/dist）'}`)
     if (voiceInjectEnabled) {
       console.log('[live2d] voice 测试注入已开启（LIVE2D_VOICE_INJECT=1）：renderer 可经 window.live2d.injectVoice 注入 state/audio-level')
@@ -651,7 +564,7 @@ if (!gotSingleInstanceLock) {
     registerIpcHandlers()
     createAppTray()
     createWindow()
-    startAudioListener()
+    voiceListenerManager.start(settingsStore.current.voiceSource)
     void startBridge()
   })
 }
@@ -767,12 +680,12 @@ async function startBridge() {
     console.warn(`[live2d] LIVE2D_BRIDGE_PORT=${JSON.stringify(envRaw)} 非法（需 1-65535 整数），回退默认 ${BRIDGE_DEFAULT_PORT}`)
   }
   const port = envPort ?? BRIDGE_DEFAULT_PORT
-  mcpHandler = createLive2dMcpHandler(mcpController)
+  mcpHandler = new McpSessionManager(mcpController)
   bridge = createBridgeServer({
     port,
     onEvent: (event) => sendVoiceEvent(avatarWindow, event),
     getHealth: bridgeHealthExtra,
-    mcpHandler,
+    mcpHandler: (request, response, body) => mcpHandler.handle(request, response, body),
   })
   try {
     const address = await bridge.listen()
@@ -796,7 +709,8 @@ app.on('before-quit', () => {
 })
 
 app.on('will-quit', () => {
-  stopAudioListener()
+  voiceListenerManager?.stop()
+  voiceListenerManager = null
   windowInteractionController.dispose()
   rendererCommandChannel.dispose()
   if (tray && !tray.isDestroyed()) tray.destroy()

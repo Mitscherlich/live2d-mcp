@@ -312,16 +312,22 @@ function createLive2dMcpServer(controller) {
 }
 
 /**
- * 创建 /mcp 请求处理器（Streamable HTTP，session 维度管理 transport）。
- * 由 bridge-server.cjs 在 /mcp 路由委托调用：handler(request, response, parsedBody)。
- * @param {object} controller 见 createLive2dMcpServer
- * @param {object} [options]
- * @param {() => number} [options.now] 时钟注入（默认 Date.now）；仅为单测可控假时钟，
- *   现有调用方 main.cjs 仍以 createLive2dMcpHandler(controller) 单参数形式调用。
+ * /mcp 请求处理器（Streamable HTTP，session 维度管理 transport）。
+ * 由 bridge-server.cjs 在 /mcp 路由委托调用：manager.handle(request, response, parsedBody)。
  */
-function createLive2dMcpHandler(controller, { now = Date.now } = {}) {
-  /** sessionId -> { server, transport, lastSeenAt } */
-  const sessions = new Map()
+class McpSessionManager {
+  /**
+   * @param {object} controller 见 createLive2dMcpServer
+   * @param {object} [options]
+   * @param {() => number} [options.now] 时钟注入（默认 Date.now）；仅为单测可控假时钟，
+   *   现有调用方 main.cjs 仍以 new McpSessionManager(controller) 单参数形式调用。
+   */
+  constructor(controller, { now = Date.now } = {}) {
+    this._controller = controller
+    this._now = now
+    /** sessionId -> { server, transport, lastSeenAt } */
+    this._sessions = new Map()
+  }
 
   /**
    * 回收若干 session：先同步从 Map 摘除（清扫对后续请求立刻生效），再异步关闭
@@ -329,9 +335,9 @@ function createLive2dMcpHandler(controller, { now = Date.now } = {}) {
    * allSettled + close 自身幂等，可容忍 double-close。
    * @param {Array<[string, object]>} entries [sessionId, session] 列表
    */
-  const retireSessions = (entries) => {
+  _retireSessions(entries) {
     if (entries.length === 0) return
-    for (const [id] of entries) sessions.delete(id)
+    for (const [id] of entries) this._sessions.delete(id)
     void Promise.allSettled(entries.map(([, session]) => session.server.close()))
   }
 
@@ -340,25 +346,25 @@ function createLive2dMcpHandler(controller, { now = Date.now } = {}) {
    *  1) 清扫空闲达 SESSION_IDLE_TIMEOUT_MS 的 session（客户端崩溃/断网无 DELETE）
    *  2) 若仍达 MAX_SESSIONS 上限，驱逐 lastSeenAt 最久未活动的那个
    */
-  const reclaimSessions = () => {
-    const deadline = now() - SESSION_IDLE_TIMEOUT_MS
-    retireSessions([...sessions].filter(([, session]) => session.lastSeenAt <= deadline))
-    while (sessions.size >= MAX_SESSIONS) {
+  _reclaimSessions() {
+    const deadline = this._now() - SESSION_IDLE_TIMEOUT_MS
+    this._retireSessions([...this._sessions].filter(([, session]) => session.lastSeenAt <= deadline))
+    while (this._sessions.size >= MAX_SESSIONS) {
       let oldest = null
-      for (const entry of sessions) {
+      for (const entry of this._sessions) {
         if (!oldest || entry[1].lastSeenAt < oldest[1].lastSeenAt) oldest = entry
       }
       if (!oldest) break
-      retireSessions([oldest])
+      this._retireSessions([oldest])
     }
   }
 
-  const handler = async (request, response, parsedBody) => {
+  async handle(request, response, parsedBody) {
     const header = request.headers['mcp-session-id']
     const sessionId = Array.isArray(header) ? header[0] : header
-    let session = sessionId ? sessions.get(sessionId) : null
+    let session = sessionId ? this._sessions.get(sessionId) : null
     // 活跃刷新：命中已有 session 即视为客户端存活，推迟其空闲超时
-    if (session) session.lastSeenAt = now()
+    if (session) session.lastSeenAt = this._now()
     try {
       if (
         !session &&
@@ -366,19 +372,19 @@ function createLive2dMcpHandler(controller, { now = Date.now } = {}) {
         request.method === 'POST' &&
         isInitializeRequest(parsedBody)
       ) {
-        reclaimSessions()
-        const server = createLive2dMcpServer(controller)
+        this._reclaimSessions()
+        const server = createLive2dMcpServer(this._controller)
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: randomUUID,
           enableJsonResponse: true,
           onsessioninitialized: (initializedSessionId) => {
-            session = { server, transport, lastSeenAt: now() }
-            sessions.set(initializedSessionId, session)
+            session = { server, transport, lastSeenAt: this._now() }
+            this._sessions.set(initializedSessionId, session)
           },
         })
         transport.onclose = () => {
           const closedSessionId = transport.sessionId
-          if (closedSessionId) sessions.delete(closedSessionId)
+          if (closedSessionId) this._sessions.delete(closedSessionId)
         }
         await server.connect(transport)
         await transport.handleRequest(request, response, parsedBody)
@@ -405,9 +411,9 @@ function createLive2dMcpHandler(controller, { now = Date.now } = {}) {
   }
 
   /** 关闭全部 session transport（应用退出时随 bridge 一起调用） */
-  handler.close = async () => {
-    const activeSessions = [...sessions.values()]
-    sessions.clear()
+  async close() {
+    const activeSessions = [...this._sessions.values()]
+    this._sessions.clear()
     await Promise.allSettled(activeSessions.map(({ server }) => server.close()))
   }
 
@@ -415,10 +421,9 @@ function createLive2dMcpHandler(controller, { now = Date.now } = {}) {
    * 只读内省快照：[{ sessionId, lastSeenAt }]（插入序）。
    * 仅供单测断言 session 生命周期（活跃刷新 / 空闲清扫 / 上限驱逐），不参与运行时逻辑。
    */
-  handler.debugSessions = () =>
-    [...sessions].map(([sessionId, { lastSeenAt }]) => ({ sessionId, lastSeenAt }))
-
-  return handler
+  debugSessions() {
+    return [...this._sessions].map(([sessionId, { lastSeenAt }]) => ({ sessionId, lastSeenAt }))
+  }
 }
 
 // MCP_PATH 与 sendJsonRpcError 的唯一出口是 ./mcp-protocol.cjs（零第三方依赖），
@@ -430,6 +435,6 @@ module.exports = {
   WINDOW_ACTIONS,
   SESSION_IDLE_TIMEOUT_MS,
   MAX_SESSIONS,
-  createLive2dMcpHandler,
+  McpSessionManager,
   createLive2dMcpServer,
 }

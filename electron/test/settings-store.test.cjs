@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { createSettingsStore } = require('../settings-store.cjs')
+const { SettingsStore } = require('../settings-store.cjs')
 
 function withTempDir(callback) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'live2d-settings-test-'))
@@ -17,7 +17,7 @@ function withTempDir(callback) {
 }
 
 test('设置文件不存在时读取默认 automatic 配置', () => withTempDir((directory) => {
-  const store = createSettingsStore({ filePath: path.join(directory, 'settings.json') })
+  const store = new SettingsStore({ filePath: path.join(directory, 'settings.json') })
   assert.deepEqual(store.load(), {
     settings: {
       version: 1,
@@ -41,7 +41,7 @@ test('设置文件不存在时读取默认 automatic 配置', () => withTempDir(
 
 test('设置写入复用 voice source sanitize 并可持久化读取', () => withTempDir((directory) => {
   const filePath = path.join(directory, 'nested', 'settings.json')
-  const store = createSettingsStore({ filePath })
+  const store = new SettingsStore({ filePath })
   const saved = store.save({
     voiceSource: { mode: 'custom', process_pattern: '  codex|chatgpt  ' },
   })
@@ -52,7 +52,7 @@ test('设置写入复用 voice source sanitize 并可持久化读取', () => wit
 }))
 
 test('窗口状态按有限坐标、尺寸范围和缩放范围规范化', () => withTempDir((directory) => {
-  const store = createSettingsStore({ filePath: path.join(directory, 'settings.json') })
+  const store = new SettingsStore({ filePath: path.join(directory, 'settings.json') })
   const saved = store.save({
     voiceSource: { mode: 'automatic' },
     window: {
@@ -75,7 +75,7 @@ test('窗口状态按有限坐标、尺寸范围和缩放范围规范化', () =>
 }))
 
 test('缺失或非法窗口状态字段回退到默认值，坐标回退为 null', () => withTempDir((directory) => {
-  const store = createSettingsStore({ filePath: path.join(directory, 'settings.json') })
+  const store = new SettingsStore({ filePath: path.join(directory, 'settings.json') })
   const saved = store.save({
     voiceSource: { mode: 'automatic' },
     window: {
@@ -98,7 +98,7 @@ test('缺失或非法窗口状态字段回退到默认值，坐标回退为 null
 
 test('非法设置不会覆盖上一份有效配置', () => withTempDir((directory) => {
   const filePath = path.join(directory, 'settings.json')
-  const store = createSettingsStore({ filePath })
+  const store = new SettingsStore({ filePath })
   store.save({ voiceSource: { mode: 'external' } })
   const before = fs.readFileSync(filePath, 'utf8')
 
@@ -113,8 +113,26 @@ test('非法设置不会覆盖上一份有效配置', () => withTempDir((directo
 test('损坏的 JSON 安全回退默认并给出 warning', () => withTempDir((directory) => {
   const filePath = path.join(directory, 'settings.json')
   fs.writeFileSync(filePath, '{not-json')
-  const result = createSettingsStore({ filePath }).load()
+  const result = new SettingsStore({ filePath }).load()
   assert.equal(result.settings.voiceSource.mode, 'automatic')
   assert.equal(result.warnings.length, 1)
   assert.match(result.warnings[0], /读取失败/)
+}))
+
+test('current 为唯一缓存真值：load/save 后同步，无需调用方自持副本', () => withTempDir((directory) => {
+  const store = new SettingsStore({ filePath: path.join(directory, 'settings.json') })
+  assert.equal(store.current.voiceSource.mode, 'automatic')
+  store.save({ voiceSource: { mode: 'external' } })
+  assert.equal(store.current.voiceSource.mode, 'external')
+  store.load()
+  assert.equal(store.current.voiceSource.mode, 'external')
+}))
+
+test('saveWindowState / saveVoiceSource 局部更新并保留其余字段', () => withTempDir((directory) => {
+  const store = new SettingsStore({ filePath: path.join(directory, 'settings.json') })
+  store.saveVoiceSource({ mode: 'external' })
+  const saved = store.saveWindowState({ x: 10, y: 20, width: 800, height: 600, scale: 1.2 })
+  assert.equal(saved.voiceSource.mode, 'external')
+  assert.deepEqual(saved.window, { x: 10, y: 20, width: 800, height: 600, scale: 1.2 })
+  assert.deepEqual(store.current, saved)
 }))

@@ -23,23 +23,40 @@ function buildTrayMenuTemplate({ showAvatar, hideAvatar, resetAvatar = () => {},
   ]
 }
 
-function createTrayController({ Tray, Menu, nativeImage, platform, actions }) {
-  const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL).resize({ width: 18, height: 18 })
-  if (platform === 'darwin') icon.setTemplateImage(true)
-  const tray = new Tray(icon)
-  tray.setToolTip('Live2D Companion')
-  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate(actions)))
-  tray.on('click', actions.showAvatar)
-  return tray
+/**
+ * 托盘控制器：持有 Tray 实例并内聚保活/销毁语义（此前"controller"返回裸
+ * Tray，销毁判断外挂在 main —— 类化后实至名归）。
+ */
+class TrayController {
+  constructor({ Tray, Menu, nativeImage, platform, actions }) {
+    const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL).resize({ width: 18, height: 18 })
+    if (platform === 'darwin') icon.setTemplateImage(true)
+    this._tray = new Tray(icon)
+    this._tray.setToolTip('Live2D Companion')
+    this._tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate(actions)))
+    this._tray.on('click', actions.showAvatar)
+  }
+
+  isDestroyed() {
+    return this._tray.isDestroyed()
+  }
+
+  destroy() {
+    this._tray.destroy()
+  }
 }
 
-function shouldQuitAfterAllWindowsClosed(tray) {
-  return !tray || tray.isDestroyed()
+/**
+ * window-all-closed 保活判定：托盘在（未销毁）则保活不退出。
+ * @param {TrayController|null|undefined} controller
+ */
+function shouldQuitAfterAllWindowsClosed(controller) {
+  return !controller || controller.isDestroyed()
 }
 
 module.exports = {
   TRAY_ICON_DATA_URL,
+  TrayController,
   buildTrayMenuTemplate,
-  createTrayController,
   shouldQuitAfterAllWindowsClosed,
 }
