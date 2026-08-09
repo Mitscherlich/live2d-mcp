@@ -9,7 +9,7 @@
  *  - 自定义 standard+secure scheme 使 '/model/...' 等根绝对路径在
  *    dev（Vite http://127.0.0.1:5173）与 prod（本 scheme）下语义一致，
  *    renderer/src/live2d-app.ts 的 MODEL_PATH 常量无需分叉。
- *  - 进程内 scheme handler，不监听任何 TCP 端口（bridge 属 F4，本片不实现）。
+ *  - 进程内 scheme handler，不监听任何 TCP 端口。
  *
  * 思路借鉴 persona 的 persona-asset scheme（只读参考，未复制其代码）。
  */
