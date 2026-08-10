@@ -16,6 +16,7 @@ const {
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_COPY_CHANNEL,
   SETTINGS_CHANGED_CHANNEL,
+  SETTINGS_LIST_SOURCES_CHANNEL,
 } = require('../settings-channels.cjs')
 const { loadSourceProbe } = require('./helpers/source-probe.cjs')
 
@@ -24,6 +25,7 @@ test('channel 常量固定为 F7 线协议值', () => {
   assert.equal(SETTINGS_SAVE_CHANNEL, 'live2d:settings:save')
   assert.equal(SETTINGS_COPY_CHANNEL, 'live2d:settings:copy-command')
   assert.equal(SETTINGS_CHANGED_CHANNEL, 'live2d:settings:changed')
+  assert.equal(SETTINGS_LIST_SOURCES_CHANNEL, 'live2d:settings:list-sources')
 })
 
 test('settings-preload.cjs 内联 channel 与本模块一致（防漂移：真读 preload 源文本）', () => {
@@ -32,6 +34,7 @@ test('settings-preload.cjs 内联 channel 与本模块一致（防漂移：真�
   assert.equal(preload.stringConst('SETTINGS_SAVE_CHANNEL'), SETTINGS_SAVE_CHANNEL)
   assert.equal(preload.stringConst('SETTINGS_COPY_CHANNEL'), SETTINGS_COPY_CHANNEL)
   assert.equal(preload.stringConst('SETTINGS_CHANGED_CHANNEL'), SETTINGS_CHANGED_CHANNEL)
+  assert.equal(preload.stringConst('SETTINGS_LIST_SOURCES_CHANNEL'), SETTINGS_LIST_SOURCES_CHANNEL)
 })
 
 test('main.cjs 复用本模块而非内联副本（避免第三份漂移源）', () => {
@@ -43,4 +46,23 @@ test('main.cjs 复用本模块而非内联副本（避免第三份漂移源）',
     /未能从 main\.cjs 提取/,
     'main.cjs 不应再内联 settings channel 字面量，应 require ./settings-channels.cjs',
   )
+})
+
+test('main.cjs 注册 list-sources 通道且 preload / UI 接线 listSources', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const preload = loadSourceProbe('settings-preload.cjs')
+  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8')
+  assert.match(mainSource, /SETTINGS_LIST_SOURCES_CHANNEL/)
+  assert.match(mainSource, /listApplicationSources/)
+  assert.match(mainSource, /ipcMain\.handle\(\s*SETTINGS_LIST_SOURCES_CHANNEL/)
+  assert.equal(preload.stringConst('SETTINGS_LIST_SOURCES_CHANNEL'), SETTINGS_LIST_SOURCES_CHANNEL)
+  const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'settings-preload.cjs'), 'utf8')
+  assert.match(preloadSource, /listSources\s*\(/)
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'settings-renderer.js'), 'utf8')
+  const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8')
+  assert.match(ui, /api\.listSources/)
+  assert.match(ui, /sourcePicker|source-picker/)
+  assert.match(html, /id="source-picker"/)
+  assert.match(html, /id="refresh-sources"/)
 })

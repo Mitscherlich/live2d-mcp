@@ -7,7 +7,12 @@
 
 import type { Live2DApp } from './live2d-app.js'
 import { createVoiceLipSync, type MouthParamTarget } from './lip-sync.js'
-import { resolveMouthParamId, type VoiceActivity } from './voice-state.js'
+import {
+  resolveMouthParamId,
+  resolveMouthFormParamId,
+  selectVoiceBodyMotion,
+  type VoiceActivity,
+} from './voice-state.js'
 import {
   clientPointToCanvas,
   clampWindowScale,
@@ -461,19 +466,44 @@ function showModelLoadError() {
  */
 function initVoiceLipSync(app: Live2DApp | null) {
   let mouthParam: MouthParamTarget | null = null
+  let formParam: MouthParamTarget | null = null
   const info = app?.getModelInfo() ?? null
   if (info) {
-    const mouthId = resolveMouthParamId(info.parameters.map((p) => p.id))
+    const ids = info.parameters.map((p) => p.id)
+    const mouthId = resolveMouthParamId(ids)
     if (mouthId) {
       const p = info.parameters.find((param) => param.id === mouthId)!
       mouthParam = { id: p.id, min: p.min, max: p.max }
     } else {
       console.warn('[Voice] 模型参数表无 ParamMouthOpenY 或等效嘴参，口型写入 no-op（仅一次）')
     }
+    // 嘴形：优先参数表；Cubism Core 有时只枚举 Groups/LipSync（仅 OpenY），
+    // 但 Hiyori 等模型仍有 ParamMouthForm 可写——开合已解析时回退标准 id。
+    const formId =
+      resolveMouthFormParamId(ids) ??
+      (mouthParam ? 'ParamMouthForm' : null)
+    if (formId) {
+      const p = info.parameters.find((param) => param.id === formId)
+      let min = p?.min ?? -1
+      let max = p?.max ?? 1
+      if (!(Number.isFinite(min) && Number.isFinite(max)) || max <= min) {
+        min = -1
+        max = 1
+      }
+      // Groups 兜底常把未知参写成 [0,1]；标准嘴形是 [-1,1]
+      if (min === 0 && max === 1 && !p) {
+        min = -1
+        max = 1
+      }
+      formParam = { id: formId, min, max }
+    } else {
+      console.warn('[Voice] 模型无 ParamMouthForm：仅驱动开合轴（伪 viseme form 仍入快照）')
+    }
   }
 
   const lip = createVoiceLipSync({
     mouthParam,
+    formParam,
     writeMouth: (paramId, value) => {
       if (paramId && app) app.setParameter(paramId, value)
       // 无嘴参/无模型：no-op（快照仍记录 lastMouthWrite，证明目标值被驱动）
@@ -482,23 +512,16 @@ function initVoiceLipSync(app: Live2DApp | null) {
 
   /**
    * 助手（Codex）出声时的肢体表现：对齐 persona 的 Listening/Speaking 槽位思想。
-   * Hiyori 无独立 Speaking 组时用 Idle 循环；speaking 时用略高优先级保证口型期间有体态。
+   * Hiyori 无独立 Speaking 组：speaking → Idle index 1 priority 2；
+   * listening/idle → Idle index 0 priority 1（可测行为差，资产限制见 selectVoiceBodyMotion）。
    * 注意：这是 **agent 播放音频** 的视觉反应，不是用户麦克风说话。
    */
   function applyVoiceBodyMotion(activity: VoiceActivity) {
     if (!app?.isLoaded()) return
-    if (activity === 'speaking') {
-      // priority 2：体态；口型仍由 LOW ticker 在 motion 之后写 ParamMouthOpenY
-      app.playMotion('Idle', -1, 2)
-      currentMotion = motionTag('Idle')
-      updateStateBar()
-      return
-    }
-    if (activity === 'listening' || activity === 'idle') {
-      app.playMotion('Idle', -1, 1)
-      currentMotion = motionTag('Idle')
-      updateStateBar()
-    }
+    const sel = selectVoiceBodyMotion(activity)
+    app.playMotion(sel.group, sel.index, sel.priority)
+    currentMotion = motionTag(sel.group, sel.index)
+    updateStateBar()
   }
 
   let shownActivity: VoiceActivity | '' = ''
@@ -556,17 +579,21 @@ function initVoiceLipSync(app: Live2DApp | null) {
     requestAnimationFrame(frame)
   }
 
-  // 调试快照：scripts/f3-lipsync-proof.mjs 经 CDP 读取，证明注入改变了嘴参目标
+  // 调试快照：scripts/f3-lipsync-proof.mjs 经 CDP 读取，证明注入改变了多维嘴参目标
   window.__live2dVoiceDebug = {
     snapshot: () => ({
       ...lip.snapshot(),
       modelLoaded: app?.isLoaded() ?? false,
       injectEnabled: typeof window.live2d?.injectVoice === 'function',
+      bodyMotion: selectVoiceBodyMotion(lip.getActivity()),
     }),
   }
-  console.log(`[Voice] 口型驱动已挂接（嘴参: ${mouthParam?.id ?? '未解析（no-op）'}，注入: ${
-    typeof window.live2d?.injectVoice === 'function' ? '开' : '关'
-  }）`)
+  console.log(
+    `[Voice] 口型驱动已挂接（开合: ${mouthParam?.id ?? '未解析（no-op）'}，` +
+      `嘴形: ${formParam?.id ?? '无'}，注入: ${
+        typeof window.live2d?.injectVoice === 'function' ? '开' : '关'
+      }）`,
+  )
 }
 
 /**

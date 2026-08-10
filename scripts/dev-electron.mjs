@@ -4,7 +4,7 @@
  *
  * 流程：
  *  1) 若 VITE_DEV_SERVER_URL 已可达则复用（避免 Port already in use）
- *  2) 否则启动 Vite（renderer，默认 127.0.0.1:5173，LIVE2D_DEV_ELECTRON=1）
+ *  2) 否则启动 Vite（renderer，默认 127.0.0.1:4000，LIVE2D_DEV_ELECTRON=1）
  *  3) 轮询等待 dev server HTTP 可达
  *  4) 以 VITE_DEV_SERVER_URL 启动 Electron
  *
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const rendererDir = path.join(rootDir, 'renderer')
-const DEFAULT_PORT = 5173
+const DEFAULT_PORT = 4000
 const START_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 150
 

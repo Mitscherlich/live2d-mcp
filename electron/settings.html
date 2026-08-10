@@ -62,10 +62,16 @@
         </div>
 
         <div id="application-fields" hidden>
-          <label for="source-id">Application source ID</label>
+          <label for="source-picker">从运行中的应用选择</label>
+          <select id="source-picker">
+            <option value="">— 加载中 / 请刷新 —</option>
+          </select>
+          <button class="secondary" id="refresh-sources" type="button">刷新应用列表</button>
+          <p class="hint" id="sources-note">选择后会自动填入下方 source_id 与 source_name；也可手填作为兜底。</p>
+          <label for="source-id">Application source ID（手填兜底）</label>
           <input id="source-id" maxlength="2080" autocomplete="off" placeholder="process:darwin:&lt;base64url&gt;" />
           <p class="hint">使用进程发现生成的稳定 source ID；非法或空值不会写入设置。</p>
-          <label for="source-name">Application source name</label>
+          <label for="source-name">Application source name（手填兜底）</label>
           <input id="source-name" maxlength="120" autocomplete="off" placeholder="例如 ChatGPT" />
         </div>
 

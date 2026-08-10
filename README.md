@@ -54,7 +54,7 @@ bun run build
 bun start
 ```
 
-启动后系统托盘提供“显示角色窗”“隐藏角色窗”“重置窗口位置”“打开设置”“退出”。关闭角色窗只会隐藏它，应用和 MCP bridge 由托盘保活；请从托盘“退出”结束应用。
+启动后系统托盘提供“显示角色窗”“隐藏角色窗”“重置窗口位置”“打开设置”“退出”。托盘图标为平面黑白 pictogram 小人（`assets/tray`），在六种姿势间随机切换简约动画，macOS 下为 template image 以适配菜单栏深色/浅色。关闭角色窗只会隐藏它，应用和 MCP bridge 由托盘保活；请从托盘“退出”结束应用。
 
 角色窗的位置、大小和 CSS 缩放比例会实时保存到 Electron `userData/settings.json`，下次启动自动恢复；恢复位置会沿用至少保留 80×40px 可见区域的边界 snap 规则。锁定状态不保存，每次启动默认可交互。托盘“重置窗口位置”会恢复右下角的 600×640、100% 默认状态。
 
@@ -96,9 +96,11 @@ curl -s -X POST http://127.0.0.1:47832/events \
 | 模式 | 行为 | 必要字段 |
 |------|------|----------|
 | `automatic` | 默认按 Codex / ChatGPT / OpenAI 类进程名匹配 | 无 |
-| `application` | 精确监听一个 application source | `source_id` 与 `source_name` |
+| `application` | 精确监听一个 application source；设置窗可从**运行中应用下拉**选择（自动填 `source_id` / `source_name`），也可手填兜底 | `source_id` 与 `source_name` |
 | `custom` | 用自定义正则匹配目标进程 | `process_pattern`（合法正则，最多 200 字符） |
 | `external` | 完全关闭原生进程捕获，只消费 loopback `POST /events` | 无 |
+
+`application` 下拉按进程 identity 去重（`process:darwin:<base64url>`），只展示 `source_id` / 名称 / 同名进程数，不含完整命令行。非 macOS 列表为空并提示；刷新按钮可重新枚举。
 
 现有环境变量仍可覆盖持久化设置：
 

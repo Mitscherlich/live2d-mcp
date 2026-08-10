@@ -82,7 +82,9 @@ const {
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_COPY_CHANNEL,
   SETTINGS_CHANGED_CHANNEL,
+  SETTINGS_LIST_SOURCES_CHANNEL,
 } = require('./settings-channels.cjs')
+const { listApplicationSources } = require('./process-discovery.cjs')
 const {
   createTrayController,
   shouldQuitAfterAllWindowsClosed,
@@ -339,7 +341,7 @@ function positionWindow(win) {
 }
 
 function rendererUrl() {
-  const base = isDev ? DEV_SERVER_URL || 'http://127.0.0.1:5173/' : `${RENDERER_ORIGIN}/`
+  const base = isDev ? DEV_SERVER_URL || 'http://127.0.0.1:4000/' : `${RENDERER_ORIGIN}/`
   if (!uiChromeEnabled) return base
   try {
     const url = new URL(base)
@@ -587,6 +589,31 @@ function registerIpcHandlers() {
     if (!isSettingsSender(event)) return false
     clipboard.writeText(settingsViewModel().codexCommand)
     return true
+  })
+
+  // application 模式下拉：枚举运行中进程 identity（去重；无 command line）
+  ipcMain.handle(SETTINGS_LIST_SOURCES_CHANNEL, async (event) => {
+    if (!isSettingsSender(event)) {
+      return { ok: false, sources: [], platform: process.platform, note: null, error: 'settings IPC sender 非法' }
+    }
+    try {
+      const listed = await listApplicationSources({ ownProcessId: process.pid })
+      return {
+        ok: true,
+        sources: listed.sources,
+        platform: listed.platform,
+        note: listed.note,
+        error: null,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        sources: [],
+        platform: process.platform,
+        note: '进程发现失败',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
   })
 
   // F3 测试注入回环：renderer 调 window.live2d.injectVoice → 本监听 → 规范化 →

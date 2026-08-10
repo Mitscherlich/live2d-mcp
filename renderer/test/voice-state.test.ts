@@ -13,11 +13,18 @@ import { createRequire } from 'node:module'
 import {
   VoiceStateMachine,
   LevelSmoother,
+  PseudoVisemeMapper,
   resolveMouthParamId,
+  resolveMouthFormParamId,
+  selectVoiceBodyMotion,
+  mapOpenToParamRange,
+  mapFormToParamRange,
   clamp01,
   VOICE_DEFAULTS,
   MOUTH_PARAM_ALIASES,
+  MOUTH_FORM_PARAM_ALIASES,
 } from '../src/voice-state.ts'
+import { createVoiceLipSync } from '../src/lip-sync.ts'
 
 const HOLD = VOICE_DEFAULTS.silenceHoldMs // 900
 
@@ -231,6 +238,163 @@ test('resolveMouthParamId：首选 ParamMouthOpenY，兼容别名与大小写，
   assert.equal(resolveMouthParamId(['ParamMouthOpen']), 'ParamMouthOpen')
   assert.equal(resolveMouthParamId(['ParamAngleZ']), null)
   assert.equal(resolveMouthParamId([]), null)
+})
+
+test('resolveMouthFormParamId：解析 ParamMouthForm 别名，无匹配 null', () => {
+  assert.equal(MOUTH_FORM_PARAM_ALIASES[0], 'ParamMouthForm')
+  assert.equal(
+    resolveMouthFormParamId(['ParamMouthOpenY', 'ParamMouthForm']),
+    'ParamMouthForm',
+  )
+  assert.equal(resolveMouthFormParamId(['PARAM_MOUTH_FORM']), 'PARAM_MOUTH_FORM')
+  assert.equal(resolveMouthFormParamId(['ParamMouthOpenY']), null)
+})
+
+test('selectVoiceBodyMotion：speaking 与 idle/listening 在 Idle index 与 priority 上可区分', () => {
+  const speaking = selectVoiceBodyMotion('speaking')
+  const listening = selectVoiceBodyMotion('listening')
+  const idle = selectVoiceBodyMotion('idle')
+  assert.equal(speaking.group, 'Idle')
+  assert.equal(listening.group, 'Idle')
+  assert.equal(idle.group, 'Idle')
+  // 行为差：index 与 priority 至少一项不同
+  assert.notEqual(
+    `${speaking.index}:${speaking.priority}`,
+    `${listening.index}:${listening.priority}`,
+  )
+  assert.deepEqual(listening, idle)
+  assert.equal(speaking.index, 1)
+  assert.equal(speaking.priority, 2)
+  assert.equal(listening.index, 0)
+  assert.equal(listening.priority, 1)
+})
+
+test('PseudoVisemeMapper：峰值 cap、静音归零、相位推进使 open/form 变化', () => {
+  const v = new PseudoVisemeMapper()
+  // 静音
+  const z = v.tick(16.7, 0)
+  assert.equal(z.open, 0)
+  assert.equal(z.form, 0)
+
+  const opens: number[] = []
+  const forms: number[] = []
+  for (let i = 0; i < 90; i++) {
+    const o = v.tick(16.7, 1)
+    opens.push(o.open)
+    forms.push(o.form)
+    assert.ok(o.open <= VOICE_DEFAULTS.peakCap + 1e-9, `open 应 ≤ peakCap，实际 ${o.open}`)
+    assert.ok(o.open >= 0)
+    assert.ok(o.form >= -1 && o.form <= 1)
+  }
+  assert.ok(Math.max(...opens) > 0.2, '高强度应有可观开合')
+  assert.ok(Math.max(...opens) <= VOICE_DEFAULTS.peakCap + 1e-9)
+  // form 在说话期间应出现变化（非恒定）
+  const formDistinct = new Set(forms.map((f) => f.toFixed(2)))
+  assert.ok(formDistinct.size > 2, `form 应随相位变化，distinct=${formDistinct.size}`)
+  const openDistinct = new Set(opens.map((o) => o.toFixed(2)))
+  assert.ok(openDistinct.size > 1, 'open 应有 flutter/相位引起的变化')
+
+  // 归零
+  const closed = v.tick(16.7, 0)
+  assert.equal(closed.open, 0)
+  assert.equal(closed.form, 0)
+})
+
+test('mapOpen/mapForm：范围映射保留 cap 与 form 对称域', () => {
+  assert.equal(mapOpenToParamRange(0, 0, 1), 0)
+  assert.ok(Math.abs(mapOpenToParamRange(0.62, 0, 1) - 0.62) < 1e-9)
+  assert.equal(mapFormToParamRange(-1, -1, 1), -1)
+  assert.equal(mapFormToParamRange(1, -1, 1), 1)
+  assert.ok(Math.abs(mapFormToParamRange(0, -1, 1) - 0) < 1e-9)
+  assert.equal(mapFormToParamRange(0, 0, 1), 0.5)
+})
+
+test('createVoiceLipSync 多维写参：开合+嘴形双 id、峰值 cap、静音回落、silenceHold', () => {
+  const writes: Array<{ paramId: string | null; value: number }> = []
+  let now = 0
+  const lip = createVoiceLipSync({
+    mouthParam: { id: 'ParamMouthOpenY', min: 0, max: 1 },
+    formParam: { id: 'ParamMouthForm', min: -1, max: 1 },
+    writeMouth: (paramId, value) => writes.push({ paramId, value }),
+    now: () => now,
+  })
+  const frames = (n: number) => {
+    for (let i = 0; i < n; i++) {
+      now += 16.7
+      lip.tick(16.7)
+    }
+  }
+
+  frames(5)
+  assert.equal(writes.length, 0, 'idle 不写嘴')
+
+  // 持续注入 level，避免 silenceHold 看门狗在无后续 level 时把 speaking 收回
+  for (let i = 0; i < 50; i++) {
+    lip.handleEvent({ type: 'audio-level', level: 0.9 })
+    now += 16.7
+    lip.tick(16.7)
+  }
+  const openWrites = writes.filter((w) => w.paramId === 'ParamMouthOpenY')
+  const formWrites = writes.filter((w) => w.paramId === 'ParamMouthForm')
+  assert.ok(openWrites.length > 0, '应写开合')
+  assert.ok(formWrites.length > 0, '应写嘴形')
+  assert.ok(
+    openWrites.every((w) => w.value <= VOICE_DEFAULTS.peakCap + 0.02),
+    '开合受 peakCap 约束',
+  )
+  const formVals = new Set(formWrites.map((w) => w.value.toFixed(2)))
+  assert.ok(formVals.size > 1, `嘴形应非恒定 distinct=${formVals.size}`)
+
+  const snap = lip.snapshot()
+  assert.equal(snap.activity, 'speaking')
+  assert.equal(snap.mouthParamId, 'ParamMouthOpenY')
+  assert.equal(snap.formParamId, 'ParamMouthForm')
+  assert.ok(snap.openWrites > 0 && snap.formWrites > 0)
+
+  // 静音：嘴回落，activity 在 hold 内仍 speaking
+  lip.handleEvent({ type: 'audio-level', level: 0 })
+  frames(30) // ~500ms
+  assert.equal(lip.snapshot().activity, 'speaking')
+  assert.ok(lip.snapshot().smoothedMouth < 0.25)
+  frames(40) // 累计 >900ms
+  assert.equal(lip.snapshot().activity, 'listening')
+  frames(40)
+  assert.ok(lip.snapshot().lastMouthWrite < 0.02)
+  assert.ok(Math.abs(lip.snapshot().lastFormWrite) < 0.05)
+})
+
+test('createVoiceLipSync：缺 form 参时仅写开合，form 快照仍推进；缺开合 no-op 不抛', () => {
+  const writes: Array<{ paramId: string | null; value: number }> = []
+  let now = 0
+  const lip = createVoiceLipSync({
+    mouthParam: { id: 'ParamMouthOpenY', min: 0, max: 1 },
+    formParam: null,
+    writeMouth: (paramId, value) => writes.push({ paramId, value }),
+    now: () => now,
+  })
+  lip.handleEvent({ type: 'audio-level', level: 0.7 })
+  for (let i = 0; i < 40; i++) {
+    now += 16.7
+    lip.tick(16.7)
+  }
+  assert.ok(writes.every((w) => w.paramId === 'ParamMouthOpenY'))
+  assert.ok(lip.snapshot().formWrites === 0)
+  // form 归一化值仍可能非零（快照），但不写模型
+  assert.equal(lip.snapshot().formParamId, null)
+
+  const lip2 = createVoiceLipSync({
+    mouthParam: null,
+    formParam: null,
+    writeMouth: (paramId, value) => writes.push({ paramId, value }),
+    now: () => now,
+  })
+  lip2.handleEvent({ type: 'audio-level', level: 0.5 })
+  assert.doesNotThrow(() => {
+    for (let i = 0; i < 10; i++) {
+      now += 16.7
+      lip2.tick(16.7)
+    }
+  })
 })
 
 test('可配置常量：自定义 silenceHoldMs 生效', () => {

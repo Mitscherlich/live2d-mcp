@@ -7,7 +7,7 @@
  *  - Chromium 默认禁止 file:// 页面发起 fetch/XHR，而 pixi-live2d-display
  *    加载模型（.model3.json / .moc3 / 贴图）依赖 fetch，file:// 下必失败。
  *  - 自定义 standard+secure scheme 使 '/model/...' 等根绝对路径在
- *    dev（Vite http://127.0.0.1:5173）与 prod（本 scheme）下语义一致，
+ *    dev（Vite http://127.0.0.1:4000）与 prod（本 scheme）下语义一致，
  *    renderer/src/live2d-app.ts 的 MODEL_PATH 常量无需分叉。
  *  - 进程内 scheme handler，不监听任何 TCP 端口（bridge 属 F4，本片不实现）。
  *

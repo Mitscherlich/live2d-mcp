@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live2D Desktop Companion · Architecture</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --bg-elevated: #121a2f;
+      --bg-panel: #0f1629;
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e8eef9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #a78bfa;
+      --accent-3: #34d399;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --node-fill: #1a243d;
+      --node-stroke: #334155;
+      --edge: #475569;
+      --highlight: #38bdf8;
+      --highlight-soft: rgba(56, 189, 248, 0.18);
+      --dim: 0.22;
+      --radius: 12px;
+      --font: "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+        "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+      --mono: "SF Mono", "Menlo", "Consolas", ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2744 0%, transparent 55%),
+                  radial-gradient(900px 500px at 100% 0%, #1b1533 0%, transparent 50%),
+                  var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 1fr minmax(280px, 360px);
+      grid-template-rows: auto 1fr;
+      height: 100%;
+      min-height: 100vh;
+    }
+
+    header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 22, 41, 0.85);
+      backdrop-filter: blur(10px);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+    }
+
+    header p {
+      margin: 2px 0 0;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .header-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      white-space: nowrap;
+    }
+
+    .chip strong { color: var(--text); font-weight: 600; }
+
+    .diagram-wrap {
+      position: relative;
+      overflow: auto;
+      min-width: 0;
+      border-right: 1px solid var(--border);
+    }
+
+    .canvas-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: linear-gradient(180deg, rgba(11, 16, 32, 0.96), rgba(11, 16, 32, 0.75));
+      border-bottom: 1px solid transparent;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      margin-left: auto;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+
+    button.tool {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    button.tool:hover { border-color: var(--accent); color: #fff; }
+    button.tool:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    #diagram {
+      display: block;
+      width: 100%;
+      min-width: 1100px;
+      height: auto;
+      min-height: 720px;
+      padding: 8px 12px 28px;
+    }
+
+    .layer-band {
+      fill: rgba(255, 255, 255, 0.015);
+      stroke: rgba(148, 163, 184, 0.08);
+      stroke-width: 1;
+    }
+
+    .layer-label {
+      fill: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .edge {
+      fill: none;
+      stroke: var(--edge);
+      stroke-width: 1.5;
+      opacity: 0.75;
+      transition: stroke 0.15s ease, opacity 0.15s ease, stroke-width 0.15s ease;
+      pointer-events: stroke;
+    }
+    .edge.dim { opacity: var(--dim); }
+    .edge.hl {
+      stroke: var(--highlight);
+      stroke-width: 2.6;
+      opacity: 1;
+      filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.45));
+    }
+    .edge-label {
+      fill: var(--text-muted);
+      font-size: 10px;
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    .edge-label.dim { opacity: 0.12; }
+    .edge-label.hl { fill: var(--accent); opacity: 0.95; font-weight: 600; }
+
+    .node {
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+    .node.dim { opacity: var(--dim); }
+    .node.hl .node-body {
+      stroke: var(--highlight);
+      stroke-width: 2.2;
+      filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.35));
+    }
+    .node.selected .node-body {
+      stroke: var(--accent-2);
+      stroke-width: 2.4;
+    }
+    .node-body {
+      fill: var(--node-fill);
+      stroke: var(--node-stroke);
+      stroke-width: 1.4;
+      rx: 10;
+      ry: 10;
+      transition: stroke 0.15s ease, filter 0.15s ease, fill 0.15s ease;
+    }
+    .node:hover .node-body {
+      fill: #203052;
+      stroke: #64748b;
+    }
+    .node-title {
+      fill: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+      pointer-events: none;
+    }
+    .node-sub {
+      fill: var(--text-muted);
+      font-size: 10px;
+      pointer-events: none;
+    }
+    .node-badge {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      pointer-events: none;
+    }
+
+    /* layer color accents */
+    .layer-external .node-body { stroke: #64748b; }
+    .layer-native .node-body { stroke: #f59e0b55; }
+    .layer-main .node-body { stroke: #38bdf855; }
+    .layer-preload .node-body { stroke: #a78bfa55; }
+    .layer-renderer .node-body { stroke: #34d39955; }
+    .layer-ui .node-body { stroke: #f472b655; }
+    .layer-storage .node-body { stroke: #94a3b855; }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--bg-panel);
+    }
+
+    .side-head {
+      padding: 14px 16px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .side-head h2 {
+      margin: 0;
+      font-size: 0.92rem;
+      font-weight: 650;
+    }
+    .side-head p {
+      margin: 6px 0 0;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+
+    .flow-list {
+      list-style: none;
+      margin: 0;
+      padding: 10px;
+      overflow: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .flow-item {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: inherit;
+      border-radius: var(--radius);
+      padding: 12px 12px 10px;
+      cursor: pointer;
+      font: inherit;
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+    }
+    .flow-item:hover {
+      border-color: rgba(56, 189, 248, 0.45);
+      transform: translateY(-1px);
+    }
+    .flow-item.active {
+      border-color: var(--accent);
+      background: linear-gradient(180deg, rgba(56, 189, 248, 0.12), rgba(26, 36, 61, 0.9));
+      box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.15);
+    }
+    .flow-item:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .flow-item .name {
+      display: block;
+      font-size: 0.84rem;
+      font-weight: 650;
+      margin-bottom: 4px;
+    }
+    .flow-item .summary {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      line-height: 1.45;
+    }
+    .flow-item .steps-count {
+      display: inline-block;
+      margin-top: 8px;
+      font-size: 0.68rem;
+      color: var(--accent);
+      font-family: var(--mono);
+    }
+
+    .detail {
+      border-top: 1px solid var(--border);
+      padding: 12px 16px 16px;
+      max-height: 42%;
+      overflow: auto;
+      background: rgba(0, 0, 0, 0.15);
+    }
+    .detail h3 {
+      margin: 0 0 8px;
+      font-size: 0.82rem;
+      font-weight: 650;
+    }
+    .detail .empty {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      line-height: 1.5;
+    }
+    .step-path {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .step-path li {
+      position: relative;
+      padding: 8px 0 8px 18px;
+      font-size: 0.76rem;
+      border-left: 2px solid rgba(56, 189, 248, 0.35);
+      margin-left: 5px;
+    }
+    .step-path li::before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 12px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    }
+    .step-path li:last-child { border-left-color: transparent; }
+    .step-path .sid {
+      display: block;
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* tooltip */
+    #tooltip {
+      position: fixed;
+      z-index: 50;
+      max-width: min(340px, calc(100vw - 24px));
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: rgba(15, 22, 41, 0.96);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      color: var(--text);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+    #tooltip.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    #tooltip .tt-title {
+      font-size: 0.82rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    #tooltip .tt-meta {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      color: var(--accent);
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+    #tooltip .tt-body {
+      font-size: 0.74rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+    #tooltip .tt-layer {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    @media (max-width: 960px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(48vh, 1fr) minmax(38vh, auto);
+      }
+      .diagram-wrap {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .side {
+        max-height: none;
+      }
+      .detail { max-height: 220px; }
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .header-meta { justify-content: flex-start; }
+    }
+
+    @media (max-width: 640px) {
+      header { padding: 12px 14px; }
+      header h1 { font-size: 0.95rem; }
+      #diagram { min-width: 900px; }
+      .legend { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Live2D Desktop Companion · 架构图</h1>
+        <p>Electron 一体化：MCP / bridge / native listener / preload / Live2D renderer</p>
+      </div>
+      <div class="header-meta">
+        <span class="chip">默认端口 <strong>127.0.0.1:47832</strong></span>
+        <span class="chip">节点 <strong id="stat-nodes">—</strong></span>
+        <span class="chip">边 <strong id="stat-edges">—</strong></span>
+        <span class="chip">流程 <strong id="stat-flows">—</strong></span>
+      </div>
+    </header>
+
+    <section class="diagram-wrap" aria-label="架构图">
+      <div class="canvas-toolbar">
+        <button type="button" class="tool" id="btn-clear" title="清除流程高亮">清除高亮</button>
+        <button type="button" class="tool" id="btn-fit" title="滚动到画布起点">回到画布</button>
+        <div class="legend" aria-hidden="true">
+          <span><i class="swatch" style="background:#64748b"></i>External</span>
+          <span><i class="swatch" style="background:#f59e0b"></i>Native</span>
+          <span><i class="swatch" style="background:#38bdf8"></i>Main</span>
+          <span><i class="swatch" style="background:#a78bfa"></i>Preload</span>
+          <span><i class="swatch" style="background:#34d399"></i>Renderer</span>
+          <span><i class="swatch" style="background:#f472b6"></i>UI / Storage</span>
+        </div>
+      </div>
+      <svg id="diagram" role="img" aria-label="交互式架构节点与边"></svg>
+    </section>
+
+    <aside class="side" aria-label="流程面板">
+      <div class="side-head">
+        <h2>数据 / 控制流程</h2>
+        <p>选择一条流程，图中将高亮完整路径（相关节点与边）。悬停节点可查看组件说明。</p>
+      </div>
+      <div class="flow-list" id="flow-list" role="listbox" aria-label="流程列表"></div>
+      <div class="detail" id="flow-detail">
+        <h3>路径步骤</h3>
+        <p class="empty">尚未选择流程。点击右侧列表中的任一项以高亮路径。</p>
+      </div>
+    </aside>
+  </div>
+
+  <div id="tooltip" role="tooltip" aria-hidden="true"></div>
+
+  <script type="application/json" id="arch-data">
+{
+  "meta": {
+    "title": "Live2D Desktop Companion · Architecture Graph",
+    "version": "1.0.0"
+  },
+  "nodes": [
+    {"id":"mcp-client","label":"MCP Client","layer":"external","kind":"actor","file":null,"description":"Codex / Claude Code / Hermes 等 Streamable HTTP MCP 客户端，连接 http://127.0.0.1:47832/mcp","x":80,"y":70},
+    {"id":"http-client","label":"HTTP Client","layer":"external","kind":"actor","file":null,"description":"curl / proof 脚本等：GET /health、POST /events 注入 state 与 audio-level","x":300,"y":70},
+    {"id":"agent-audio-process","label":"Agent Audio Process","layer":"external","kind":"actor","file":null,"description":"出声进程（codex / chatgpt / openai 类或自定义 regex 匹配），被 macOS process tap 捕获输出电平","x":560,"y":70},
+    {"id":"native-helper","label":"Native Audio Helper","layer":"native","kind":"process","file":"native/macos/Live2dAudioListener.mm","description":"Core Audio process tap helper；内存计算归一化 level∈[0,1]，NDJSON stdout；不采麦克风、不落盘、不上传","x":560,"y":190},
+    {"id":"bridge-server","label":"Bridge Server","layer":"main","kind":"module","file":"electron/bridge-server.cjs","description":"loopback HTTP（默认 127.0.0.1:47832）：GET /health、POST /events、/mcp 委托；Host/Origin 防线；body ≤64KB","x":80,"y":320},
+    {"id":"mcp-server","label":"MCP Server","layer":"main","kind":"module","file":"electron/mcp-server.cjs","description":"Streamable HTTP MCP server 名 live2d-companion；工具 get_status/control_window/get_model_info/set_expression/play_motion 等；无 TTS","x":300,"y":320},
+    {"id":"mcp-protocol","label":"MCP Protocol","layer":"main","kind":"module","file":"electron/mcp-protocol.cjs","description":"零依赖 MCP_PATH 与 JSON-RPC 错误出口；bridge 与 settings-view 共用","x":520,"y":320},
+    {"id":"voice-events","label":"Voice Events","layer":"main","kind":"module","file":"electron/voice-events.cjs","description":"normalizeVoiceEvent 权威规范化：state / audio-level 白名单、level clamp [0,1]","x":740,"y":320},
+    {"id":"electron-main","label":"Electron Main","layer":"main","kind":"orchestrator","file":"electron/main.cjs","description":"应用生命周期编排：角色窗/设置窗/托盘、startBridge、sendVoiceEvent、sendRendererCommand、listener 启停","x":300,"y":450},
+    {"id":"cmd-channel","label":"Command Channel","layer":"main","kind":"module","file":"electron/renderer-command-channel.cjs","description":"main↔renderer 请求-响应关联器：requestId、超时 2s、ready 标志；IPC live2d:command","x":80,"y":580},
+    {"id":"cmd-protocol","label":"Command Protocol","layer":"main","kind":"module","file":"electron/renderer-commands.cjs","description":"命令帧类型白名单与结果帧规范化","x":300,"y":580},
+    {"id":"audio-listener","label":"Audio Listener Factory","layer":"main","kind":"module","file":"electron/audio-listener.cjs","description":"createAudioListener：按 voice source 模式决定 native listener 或 disabled（external）","x":520,"y":580},
+    {"id":"native-process-listener","label":"Native Process Listener","layer":"main","kind":"module","file":"electron/native-process-audio-listener.cjs","description":"spawn helper、解析 NDJSON、onSession/onLevel/onStatus；静音连续 0 抑制","x":740,"y":580},
+    {"id":"process-discovery","label":"Process Discovery","layer":"main","kind":"module","file":"electron/process-discovery.cjs","description":"ps 快照匹配 automatic/application/custom 目标进程","x":960,"y":580},
+    {"id":"voice-source","label":"Voice Source Config","layer":"main","kind":"module","file":"electron/voice-source.cjs","description":"resolveVoiceSourceConfig：automatic|application|custom|external；LIVE2D_* env 覆盖","x":520,"y":700},
+    {"id":"listener-status","label":"Listener Status","layer":"main","kind":"module","file":"electron/listener-status.cjs","description":"buildListenerSummary：/health 与 MCP get_status 共享真实 source/status","x":740,"y":700},
+    {"id":"settings-store","label":"Settings Store","layer":"main","kind":"module","file":"electron/settings-store.cjs","description":"userData/settings.json 原子读写：voiceSource + window bounds/scale","x":80,"y":700},
+    {"id":"settings-view","label":"Settings ViewModel","layer":"main","kind":"module","file":"electron/settings-view.cjs","description":"构建设置页模型：实际 MCP URL、Codex 命令、voice 表单字段","x":300,"y":700},
+    {"id":"settings-channels","label":"Settings Channels","layer":"main","kind":"module","file":"electron/settings-channels.cjs","description":"设置窗 IPC 通道常量与主进程 handler 注册","x":960,"y":450},
+    {"id":"tray","label":"System Tray","layer":"main","kind":"module","file":"electron/tray.cjs","description":"托盘菜单：显示/隐藏角色窗、重置位置、打开设置、退出；关闭角色窗 hide 保活","x":960,"y":320},
+    {"id":"window-interactions","label":"Window Interactions","layer":"main","kind":"module","file":"electron/window-interactions.cjs","description":"角色窗拖拽/缩放/全局鼠标位置 IPC 主进程侧","x":960,"y":700},
+    {"id":"renderer-protocol","label":"Renderer Protocol","layer":"main","kind":"module","file":"electron/renderer-protocol.cjs","description":"live2d:// 自定义协议，向角色窗提供 renderer 静态资源","x":80,"y":450},
+    {"id":"avatar-preload","label":"Avatar Preload","layer":"preload","kind":"module","file":"electron/preload.cjs","description":"contextBridge 窄 API：onVoiceEvent、onCommand、窗口交互；不暴露 fs/任意 IPC","x":300,"y":820},
+    {"id":"settings-preload","label":"Settings Preload","layer":"preload","kind":"module","file":"electron/settings-preload.cjs","description":"设置窗 sandbox preload：读/写设置、复制 Codex 命令","x":740,"y":820},
+    {"id":"settings-ui","label":"Settings UI","layer":"ui","kind":"view","file":"electron/settings.html","description":"最小设置页：voice source 模式、MCP URL 展示、保存后热更新 listener","x":960,"y":820},
+    {"id":"renderer-main","label":"Renderer Entry","layer":"renderer","kind":"module","file":"renderer/src/main.ts","description":"初始化 Live2DApp、voice 口型、命令通道、桌面交互与按钮组","x":300,"y":950},
+    {"id":"voice-state","label":"Voice State Machine","layer":"renderer","kind":"module","file":"renderer/src/voice-state.ts","description":"idle/listening/speaking 推导：level 阈值 0.018、静音保持 900ms；嘴参 id 解析","x":80,"y":1080},
+    {"id":"lip-sync","label":"Lip Sync","layer":"renderer","kind":"module","file":"renderer/src/lip-sync.ts","description":"amplitude 平滑 + 伪 viseme → ParamMouthOpenY + ParamMouthForm；PIXI ticker 写入","x":300,"y":1080},
+    {"id":"live2d-app","label":"Live2D App","layer":"renderer","kind":"module","file":"renderer/src/live2d-app.ts","description":"pixi.js + pixi-live2d-display：加载 Cubism 模型；expression/motion/parameter/look_at","x":520,"y":1080},
+    {"id":"desktop-interactions","label":"Desktop Interactions","layer":"renderer","kind":"module","file":"renderer/src/desktop-interactions.ts","description":"拖拽/缩放/鼠标跟随视线的纯函数与事件判定","x":740,"y":1080},
+    {"id":"settings-json","label":"settings.json","layer":"storage","kind":"storage","file":null,"description":"Electron userData 持久化：version、voiceSource、window {x,y,width,height,scale}","x":80,"y":820}
+  ],
+  "edges": [
+    {"id":"e-mcp-client-bridge","source":"mcp-client","target":"bridge-server","label":"HTTP /mcp","kind":"control"},
+    {"id":"e-http-health","source":"http-client","target":"bridge-server","label":"GET /health","kind":"data"},
+    {"id":"e-http-events","source":"http-client","target":"bridge-server","label":"POST /events","kind":"data"},
+    {"id":"e-bridge-mcp","source":"bridge-server","target":"mcp-server","label":"mcpHandler","kind":"control"},
+    {"id":"e-mcp-protocol","source":"mcp-server","target":"mcp-protocol","label":"path + RPC errors","kind":"depends"},
+    {"id":"e-bridge-protocol","source":"bridge-server","target":"mcp-protocol","label":"MCP_PATH","kind":"depends"},
+    {"id":"e-bridge-voice-norm","source":"bridge-server","target":"voice-events","label":"normalizeVoiceEvent","kind":"data"},
+    {"id":"e-bridge-main-events","source":"bridge-server","target":"electron-main","label":"onEvent","kind":"data"},
+    {"id":"e-mcp-main","source":"mcp-server","target":"electron-main","label":"controller","kind":"control"},
+    {"id":"e-main-cmd-channel","source":"electron-main","target":"cmd-channel","label":"sendRendererCommand","kind":"control"},
+    {"id":"e-cmd-channel-protocol","source":"cmd-channel","target":"cmd-protocol","label":"frame validate","kind":"depends"},
+    {"id":"e-cmd-preload","source":"cmd-channel","target":"avatar-preload","label":"IPC command","kind":"control"},
+    {"id":"e-main-voice-norm","source":"electron-main","target":"voice-events","label":"normalize","kind":"data"},
+    {"id":"e-main-voice-preload","source":"electron-main","target":"avatar-preload","label":"IPC voice","kind":"data"},
+    {"id":"e-main-audio-listener","source":"electron-main","target":"audio-listener","label":"createAudioListener","kind":"control"},
+    {"id":"e-main-voice-source","source":"electron-main","target":"voice-source","label":"resolve config","kind":"depends"},
+    {"id":"e-audio-native-listener","source":"audio-listener","target":"native-process-listener","label":"non-external","kind":"control"},
+    {"id":"e-native-listener-discovery","source":"native-process-listener","target":"process-discovery","label":"match pid","kind":"depends"},
+    {"id":"e-native-listener-helper","source":"native-process-listener","target":"native-helper","label":"spawn + NDJSON","kind":"data"},
+    {"id":"e-agent-helper","source":"agent-audio-process","target":"native-helper","label":"process tap","kind":"data"},
+    {"id":"e-native-listener-main","source":"native-process-listener","target":"electron-main","label":"onSession/onLevel","kind":"data"},
+    {"id":"e-main-listener-status","source":"electron-main","target":"listener-status","label":"summary","kind":"data"},
+    {"id":"e-bridge-health-status","source":"bridge-server","target":"listener-status","label":"/health.listener","kind":"data"},
+    {"id":"e-main-tray","source":"electron-main","target":"tray","label":"create tray","kind":"control"},
+    {"id":"e-tray-main","source":"tray","target":"electron-main","label":"menu actions","kind":"control"},
+    {"id":"e-main-settings-store","source":"electron-main","target":"settings-store","label":"load/save","kind":"data"},
+    {"id":"e-settings-store-json","source":"settings-store","target":"settings-json","label":"atomic write","kind":"data"},
+    {"id":"e-main-settings-view","source":"electron-main","target":"settings-view","label":"view model","kind":"depends"},
+    {"id":"e-main-settings-channels","source":"electron-main","target":"settings-channels","label":"register","kind":"control"},
+    {"id":"e-settings-channels-preload","source":"settings-channels","target":"settings-preload","label":"settings IPC","kind":"control"},
+    {"id":"e-settings-preload-ui","source":"settings-preload","target":"settings-ui","label":"API bridge","kind":"control"},
+    {"id":"e-main-renderer-protocol","source":"electron-main","target":"renderer-protocol","label":"live2d://","kind":"depends"},
+    {"id":"e-main-window-ix","source":"electron-main","target":"window-interactions","label":"bounds IPC","kind":"control"},
+    {"id":"e-preload-renderer","source":"avatar-preload","target":"renderer-main","label":"window.live2d","kind":"control"},
+    {"id":"e-renderer-voice-state","source":"renderer-main","target":"voice-state","label":"activity","kind":"data"},
+    {"id":"e-renderer-lip-sync","source":"renderer-main","target":"lip-sync","label":"createVoiceLipSync","kind":"data"},
+    {"id":"e-lip-sync-voice-state","source":"lip-sync","target":"voice-state","label":"thresholds","kind":"depends"},
+    {"id":"e-renderer-live2d","source":"renderer-main","target":"live2d-app","label":"model/commands","kind":"control"},
+    {"id":"e-lip-sync-live2d","source":"lip-sync","target":"live2d-app","label":"mouth params","kind":"data"},
+    {"id":"e-renderer-desktop","source":"renderer-main","target":"desktop-interactions","label":"drag/scale/look","kind":"control"},
+    {"id":"e-desktop-preload","source":"desktop-interactions","target":"avatar-preload","label":"move/scale IPC","kind":"control"},
+    {"id":"e-cmd-result","source":"renderer-main","target":"avatar-preload","label":"command-result","kind":"control"}
+  ],
+  "flows": [
+    {
+      "id": "flow-mcp-visual-command",
+      "name": "MCP 视觉命令 → Renderer",
+      "summary": "Agent 经 Streamable HTTP MCP 调用表情/动作等工具，main 经命令通道转发到 Live2D renderer 执行。",
+      "steps": ["mcp-client","bridge-server","mcp-server","electron-main","cmd-channel","avatar-preload","renderer-main","live2d-app"]
+    },
+    {
+      "id": "flow-mcp-window-control",
+      "name": "MCP 窗口控制",
+      "summary": "control_window show|hide|toggle 由 main 直接作用角色窗，不经 renderer 命令通道。",
+      "steps": ["mcp-client","bridge-server","mcp-server","electron-main"]
+    },
+    {
+      "id": "flow-events-lipsync",
+      "name": "POST /events → 口型",
+      "summary": "外部 HTTP 注入 state/audio-level，经权威规范化与 IPC 到达 renderer 口型链路。",
+      "steps": ["http-client","bridge-server","voice-events","electron-main","avatar-preload","renderer-main","voice-state","lip-sync","live2d-app"]
+    },
+    {
+      "id": "flow-native-lipsync",
+      "name": "Native Listener → 口型",
+      "summary": "macOS process tap 捕获 agent 出声进程电平，与 /events 汇合到同一 sendVoiceEvent 路径驱动嘴型。",
+      "steps": ["agent-audio-process","native-helper","native-process-listener","electron-main","voice-events","avatar-preload","renderer-main","voice-state","lip-sync","live2d-app"]
+    },
+    {
+      "id": "flow-health-status",
+      "name": "GET /health 状态摘要",
+      "summary": "只读健康检查：bridge 端口、voice 摘要、listener 真实状态、MCP URL 等（不含用户内容）。",
+      "steps": ["http-client","bridge-server","electron-main","listener-status"]
+    },
+    {
+      "id": "flow-mcp-get-status",
+      "name": "MCP get_status",
+      "summary": "只读状态工具：窗口/bridge/voice/listener/mcp；模型就绪经命令通道往返 renderer。",
+      "steps": ["mcp-client","bridge-server","mcp-server","electron-main","listener-status","cmd-channel","avatar-preload","renderer-main","live2d-app"]
+    },
+    {
+      "id": "flow-tray-lifecycle",
+      "name": "托盘与窗口生命周期",
+      "summary": "托盘显示/隐藏/设置/退出；关闭角色窗 hide 保活 bridge 与 renderer。",
+      "steps": ["tray","electron-main","avatar-preload","renderer-main"]
+    },
+    {
+      "id": "flow-settings-voice-update",
+      "name": "设置页更新 Voice Source",
+      "summary": "设置 UI 保存 voice source → 原子写入 settings.json → 无 env 覆盖时热重启 listener。",
+      "steps": ["settings-ui","settings-preload","settings-channels","electron-main","settings-store","settings-json","voice-source","audio-listener","native-process-listener"]
+    },
+    {
+      "id": "flow-desktop-drag-scale",
+      "name": "桌面拖拽 / 缩放",
+      "summary": "renderer 交互判定后经 preload 窄 IPC 请求 main 调整角色窗 bounds/scale。",
+      "steps": ["renderer-main","desktop-interactions","avatar-preload","window-interactions","electron-main"]
+    },
+    {
+      "id": "flow-app-boot",
+      "name": "应用启动编排",
+      "summary": "main 注册协议与通道，启动 bridge/MCP/listener，创建角色窗经 preload 加载 Live2D。",
+      "steps": ["electron-main","renderer-protocol","bridge-server","mcp-server","voice-source","audio-listener","settings-store","tray","avatar-preload","renderer-main","live2d-app"]
+    }
+  ]
+}
+  </script>
+
+  <script>
+(function () {
+  'use strict';
+
+  /** @type {{nodes:any[], edges:any[], flows:any[]}} */
+  const DATA = JSON.parse(document.getElementById('arch-data').textContent);
+
+  const NODE_W = 180;
+  const NODE_H = 52;
+  const svg = document.getElementById('diagram');
+  const flowList = document.getElementById('flow-list');
+  const flowDetail = document.getElementById('flow-detail');
+  const tooltip = document.getElementById('tooltip');
+  const btnClear = document.getElementById('btn-clear');
+  const btnFit = document.getElementById('btn-fit');
+
+  const nodeById = new Map(DATA.nodes.map((n) => [n.id, n]));
+  let activeFlowId = null;
+  let selectedNodeId = null;
+
+  document.getElementById('stat-nodes').textContent = String(DATA.nodes.length);
+  document.getElementById('stat-edges').textContent = String(DATA.edges.length);
+  document.getElementById('stat-flows').textContent = String(DATA.flows.length);
+
+  function nodeCenter(n) {
+    return { x: n.x + NODE_W / 2, y: n.y + NODE_H / 2 };
+  }
+
+  function edgePath(a, b) {
+    const s = nodeCenter(a);
+    const t = nodeCenter(b);
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
+    // short stubs from node border toward target
+    const sx = s.x + Math.sign(dx || 1) * (NODE_W / 2 - 4);
+    const sy = s.y + (Math.abs(dy) > Math.abs(dx) ? Math.sign(dy || 1) * (NODE_H / 2 - 2) : 0);
+    const tx = t.x - Math.sign(dx || 1) * (NODE_W / 2 - 4);
+    const ty = t.y - (Math.abs(dy) > Math.abs(dx) ? Math.sign(dy || 1) * (NODE_H / 2 - 2) : 0);
+    const mx = (sx + tx) / 2;
+    const my = (sy + ty) / 2;
+    const c1x = sx + (mx - sx) * 0.55;
+    const c1y = sy;
+    const c2x = tx - (tx - mx) * 0.55;
+    const c2y = ty;
+    return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
+  }
+
+  function edgeMidpoint(a, b) {
+    const s = nodeCenter(a);
+    const t = nodeCenter(b);
+    return { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 - 6 };
+  }
+
+  function resolveStepEdgeIds(steps) {
+    const edgeIds = new Set();
+    const stepSet = new Set(steps);
+    // Prefer consecutive step pairs that have a direct edge either direction.
+    for (let i = 0; i < steps.length - 1; i++) {
+      const a = steps[i];
+      const b = steps[i + 1];
+      const direct = DATA.edges.filter(
+        (e) => (e.source === a && e.target === b) || (e.source === b && e.target === a)
+      );
+      if (direct.length) {
+        direct.forEach((e) => edgeIds.add(e.id));
+        continue;
+      }
+      // soft: any edge connecting consecutive steps via common neighbor is ignored;
+      // fall back to any edge between nodes both in the step set that touch either end
+      DATA.edges.forEach((e) => {
+        if (
+          stepSet.has(e.source) &&
+          stepSet.has(e.target) &&
+          (e.source === a || e.target === a || e.source === b || e.target === b)
+        ) {
+          // only if both endpoints are adjacent in path distance ≤ 1 among steps
+          const ia = steps.indexOf(e.source);
+          const ib = steps.indexOf(e.target);
+          if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) === 1) edgeIds.add(e.id);
+        }
+      });
+    }
+    // Also include all edges fully contained in consecutive path pairs only (already).
+    // For multi-hop visualization quality: include edges between any two consecutive steps
+    // if found via undirected multi-edge match — done above.
+    // Final fill: edges whose both ends are in steps AND are consecutive in steps list.
+    DATA.edges.forEach((e) => {
+      const ia = steps.indexOf(e.source);
+      const ib = steps.indexOf(e.target);
+      if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) === 1) edgeIds.add(e.id);
+    });
+    return edgeIds;
+  }
+
+  function computeViewBox() {
+    let maxX = 0;
+    let maxY = 0;
+    DATA.nodes.forEach((n) => {
+      maxX = Math.max(maxX, n.x + NODE_W + 40);
+      maxY = Math.max(maxY, n.y + NODE_H + 40);
+    });
+    return { w: Math.max(maxX, 1100), h: Math.max(maxY, 720) };
+  }
+
+  function layerBands() {
+    return [
+      { label: 'External', y: 30, h: 110 },
+      { label: 'Native', y: 150, h: 110 },
+      { label: 'Electron Main', y: 280, h: 500 },
+      { label: 'Preload / UI / Storage', y: 790, h: 110 },
+      { label: 'Renderer', y: 920, h: 230 },
+    ];
+  }
+
+  function renderDiagram() {
+    const vb = computeViewBox();
+    svg.setAttribute('viewBox', `0 0 ${vb.w} ${vb.h}`);
+    svg.setAttribute('width', String(vb.w));
+    svg.setAttribute('height', String(vb.h));
+    svg.innerHTML = '';
+
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    defs.innerHTML = `
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"></path>
+      </marker>
+      <marker id="arrow-hl" viewBox="0 0 10 10" refX="9" refY="5"
+        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8"></path>
+      </marker>
+    `;
+    svg.appendChild(defs);
+
+    const bandG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    bandG.setAttribute('class', 'bands');
+    layerBands().forEach((b) => {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('class', 'layer-band');
+      rect.setAttribute('x', '20');
+      rect.setAttribute('y', String(b.y));
+      rect.setAttribute('width', String(vb.w - 40));
+      rect.setAttribute('height', String(b.h));
+      rect.setAttribute('rx', '14');
+      bandG.appendChild(rect);
+      const lab = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lab.setAttribute('class', 'layer-label');
+      lab.setAttribute('x', '36');
+      lab.setAttribute('y', String(b.y + 18));
+      lab.textContent = b.label;
+      bandG.appendChild(lab);
+    });
+    svg.appendChild(bandG);
+
+    const edgeG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    edgeG.setAttribute('class', 'edges');
+    const edgeLabelG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    edgeLabelG.setAttribute('class', 'edge-labels');
+
+    DATA.edges.forEach((e) => {
+      const a = nodeById.get(e.source);
+      const b = nodeById.get(e.target);
+      if (!a || !b) return;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('id', `edge-${e.id}`);
+      path.setAttribute('class', 'edge');
+      path.setAttribute('d', edgePath(a, b));
+      path.setAttribute('marker-end', 'url(#arrow)');
+      path.dataset.edgeId = e.id;
+      path.dataset.source = e.source;
+      path.dataset.target = e.target;
+      edgeG.appendChild(path);
+
+      if (e.label) {
+        const mid = edgeMidpoint(a, b);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('id', `edge-label-${e.id}`);
+        t.setAttribute('class', 'edge-label');
+        t.setAttribute('x', String(mid.x));
+        t.setAttribute('y', String(mid.y));
+        t.setAttribute('text-anchor', 'middle');
+        t.textContent = e.label;
+        edgeLabelG.appendChild(t);
+      }
+    });
+    svg.appendChild(edgeG);
+    svg.appendChild(edgeLabelG);
+
+    const nodeG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    nodeG.setAttribute('class', 'nodes');
+
+    DATA.nodes.forEach((n) => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.setAttribute('id', `node-${n.id}`);
+      g.setAttribute('class', `node layer-${n.layer}`);
+      g.dataset.nodeId = n.id;
+      g.setAttribute('transform', `translate(${n.x}, ${n.y})`);
+      g.setAttribute('tabindex', '0');
+      g.setAttribute('role', 'button');
+      g.setAttribute('aria-label', n.label);
+
+      const body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      body.setAttribute('class', 'node-body');
+      body.setAttribute('width', String(NODE_W));
+      body.setAttribute('height', String(NODE_H));
+      g.appendChild(body);
+
+      const accent = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      accent.setAttribute('x', '0');
+      accent.setAttribute('y', '0');
+      accent.setAttribute('width', '5');
+      accent.setAttribute('height', String(NODE_H));
+      accent.setAttribute('rx', '3');
+      const accentColors = {
+        external: '#64748b',
+        native: '#f59e0b',
+        main: '#38bdf8',
+        preload: '#a78bfa',
+        renderer: '#34d399',
+        ui: '#f472b6',
+        storage: '#94a3b8',
+      };
+      accent.setAttribute('fill', accentColors[n.layer] || '#64748b');
+      g.appendChild(accent);
+
+      const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      title.setAttribute('class', 'node-title');
+      title.setAttribute('x', '14');
+      title.setAttribute('y', '22');
+      title.textContent = n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label;
+      g.appendChild(title);
+
+      const sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      sub.setAttribute('class', 'node-sub');
+      sub.setAttribute('x', '14');
+      sub.setAttribute('y', '40');
+      const subText = n.file || n.kind || n.layer;
+      sub.textContent = subText.length > 28 ? subText.slice(0, 27) + '…' : subText;
+      g.appendChild(sub);
+
+      g.addEventListener('mouseenter', (ev) => showTooltip(n, ev));
+      g.addEventListener('mousemove', (ev) => moveTooltip(ev));
+      g.addEventListener('mouseleave', hideTooltip);
+      g.addEventListener('focus', () => {
+        selectedNodeId = n.id;
+        applyHighlight();
+        showTooltip(n, null, g);
+      });
+      g.addEventListener('blur', () => {
+        if (selectedNodeId === n.id) {
+          selectedNodeId = null;
+          applyHighlight();
+        }
+        hideTooltip();
+      });
+      g.addEventListener('click', () => {
+        selectedNodeId = selectedNodeId === n.id ? null : n.id;
+        applyHighlight();
+      });
+
+      nodeG.appendChild(g);
+    });
+    svg.appendChild(nodeG);
+  }
+
+  function showTooltip(n, ev, anchorEl) {
+    const file = n.file ? n.file : '(runtime / external)';
+    tooltip.innerHTML =
+      `<div class="tt-title">${escapeHtml(n.label)}</div>` +
+      `<div class="tt-meta">${escapeHtml(n.id)} · ${escapeHtml(file)}</div>` +
+      `<div class="tt-body">${escapeHtml(n.description || '')}</div>` +
+      `<span class="tt-layer">${escapeHtml(n.layer)} · ${escapeHtml(n.kind || 'module')}</span>`;
+    tooltip.classList.add('visible');
+    tooltip.setAttribute('aria-hidden', 'false');
+    if (ev) moveTooltip(ev);
+    else if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect();
+      placeTooltip(rect.right + 10, rect.top);
+    }
+  }
+
+  function moveTooltip(ev) {
+    placeTooltip(ev.clientX + 14, ev.clientY + 14);
+  }
+
+  function placeTooltip(x, y) {
+    const pad = 12;
+    const tw = tooltip.offsetWidth || 280;
+    const th = tooltip.offsetHeight || 100;
+    let left = x;
+    let top = y;
+    if (left + tw > window.innerWidth - pad) left = window.innerWidth - tw - pad;
+    if (top + th > window.innerHeight - pad) top = window.innerHeight - th - pad;
+    if (left < pad) left = pad;
+    if (top < pad) top = pad;
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+  }
+
+  function hideTooltip() {
+    tooltip.classList.remove('visible');
+    tooltip.setAttribute('aria-hidden', 'true');
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function applyHighlight() {
+    const flow = DATA.flows.find((f) => f.id === activeFlowId);
+    const hlNodes = new Set(flow ? flow.steps : []);
+    const hlEdges = flow ? resolveStepEdgeIds(flow.steps) : new Set();
+    const dimming = Boolean(flow);
+
+    DATA.nodes.forEach((n) => {
+      const el = document.getElementById(`node-${n.id}`);
+      if (!el) return;
+      el.classList.toggle('hl', hlNodes.has(n.id));
+      el.classList.toggle('dim', dimming && !hlNodes.has(n.id));
+      el.classList.toggle('selected', selectedNodeId === n.id);
+    });
+
+    DATA.edges.forEach((e) => {
+      const el = document.getElementById(`edge-${e.id}`);
+      const lab = document.getElementById(`edge-label-${e.id}`);
+      if (!el) return;
+      const on = hlEdges.has(e.id);
+      el.classList.toggle('hl', on);
+      el.classList.toggle('dim', dimming && !on);
+      el.setAttribute('marker-end', on ? 'url(#arrow-hl)' : 'url(#arrow)');
+      if (lab) {
+        lab.classList.toggle('hl', on);
+        lab.classList.toggle('dim', dimming && !on);
+      }
+    });
+  }
+
+  function selectFlow(flowId) {
+    activeFlowId = activeFlowId === flowId ? null : flowId;
+    [...flowList.querySelectorAll('.flow-item')].forEach((btn) => {
+      const on = btn.dataset.flowId === activeFlowId;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    renderFlowDetail();
+    applyHighlight();
+  }
+
+  function renderFlowDetail() {
+    const flow = DATA.flows.find((f) => f.id === activeFlowId);
+    if (!flow) {
+      flowDetail.innerHTML =
+        '<h3>路径步骤</h3><p class="empty">尚未选择流程。点击右侧列表中的任一项以高亮路径。</p>';
+      return;
+    }
+    const items = flow.steps
+      .map((id, i) => {
+        const n = nodeById.get(id);
+        const label = n ? n.label : id;
+        return `<li><strong>${i + 1}. ${escapeHtml(label)}</strong><span class="sid">${escapeHtml(id)}</span></li>`;
+      })
+      .join('');
+    flowDetail.innerHTML =
+      `<h3>${escapeHtml(flow.name)}</h3>` +
+      `<p class="empty" style="margin-bottom:10px">${escapeHtml(flow.summary || '')}</p>` +
+      `<ol class="step-path">${items}</ol>`;
+  }
+
+  function renderFlowList() {
+    flowList.innerHTML = '';
+    DATA.flows.forEach((f, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'flow-item';
+      btn.dataset.flowId = f.id;
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('aria-selected', 'false');
+      btn.innerHTML =
+        `<span class="name">${escapeHtml(f.name)}</span>` +
+        `<span class="summary">${escapeHtml(f.summary || '')}</span>` +
+        `<span class="steps-count">${f.steps.length} steps</span>`;
+      btn.addEventListener('click', () => selectFlow(f.id));
+      btn.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          selectFlow(f.id);
+        }
+      });
+      flowList.appendChild(btn);
+      if (idx === 0) {
+        // no auto-select; user picks
+      }
+    });
+  }
+
+  btnClear.addEventListener('click', () => {
+    activeFlowId = null;
+    selectedNodeId = null;
+    [...flowList.querySelectorAll('.flow-item')].forEach((btn) => {
+      btn.classList.remove('active');
+      btn.setAttribute('aria-selected', 'false');
+    });
+    renderFlowDetail();
+    applyHighlight();
+  });
+
+  btnFit.addEventListener('click', () => {
+    const wrap = document.querySelector('.diagram-wrap');
+    if (wrap) wrap.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+  });
+
+  // Expose for automated checks / debugging
+  window.__ARCH_DIAGRAM__ = {
+    data: DATA,
+    selectFlow,
+    getActiveFlowId: () => activeFlowId,
+    resolveStepEdgeIds,
+    getHighlightState: () => {
+      const flow = DATA.flows.find((f) => f.id === activeFlowId);
+      return {
+        activeFlowId,
+        nodes: flow ? flow.steps.slice() : [],
+        edges: flow ? [...resolveStepEdgeIds(flow.steps)] : [],
+      };
+    },
+  };
+
+  renderDiagram();
+  renderFlowList();
+  applyHighlight();
+})();
+  </script>
+</body>
+</html>

@@ -7,7 +7,7 @@ export default defineConfig({
     // 固定 IPv4 loopback：默认 'localhost' 在本机仅绑定 ::1，
     // dev-electron 脚本与 Electron 均以 127.0.0.1 访问（与 SPEC loopback 边界一致）
     host: '127.0.0.1',
-    port: 5173,
+    port: 4000,
     strictPort: true,
     open: false,
   },

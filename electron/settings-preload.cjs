@@ -15,6 +15,7 @@ const SETTINGS_GET_CHANNEL = 'live2d:settings:get'
 const SETTINGS_SAVE_CHANNEL = 'live2d:settings:save'
 const SETTINGS_COPY_CHANNEL = 'live2d:settings:copy-command'
 const SETTINGS_CHANGED_CHANNEL = 'live2d:settings:changed'
+const SETTINGS_LIST_SOURCES_CHANNEL = 'live2d:settings:list-sources'
 
 contextBridge.exposeInMainWorld('live2dSettings', {
   get() {
@@ -28,6 +29,10 @@ contextBridge.exposeInMainWorld('live2dSettings', {
   },
   copyCommand() {
     return ipcRenderer.invoke(SETTINGS_COPY_CHANNEL)
+  },
+  /** 枚举当前运行中可监听 application sources（source_id / source_name / pidCount） */
+  listSources() {
+    return ipcRenderer.invoke(SETTINGS_LIST_SOURCES_CHANNEL)
   },
   onChanged(callback) {
     if (typeof callback !== 'function') return () => {}

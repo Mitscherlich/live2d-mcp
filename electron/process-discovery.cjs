@@ -20,8 +20,10 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const {
   DEFAULT_VOICE_APP_PATTERN,
+  cleanSourceName,
   normalizeVoiceSource,
   processIdentity,
+  processSourceId,
   voiceSourceIdentity,
 } = require('./voice-source.cjs')
 
@@ -172,10 +174,96 @@ async function discoverVoiceProcesses({
   })
 }
 
+/**
+ * 从进程 identity 得到设置窗展示名：路径取最后一段，否则原样 trim。
+ * 不暴露完整 command line。
+ */
+function displayNameFromIdentity(identity) {
+  const normalized = String(identity ?? '').trim()
+  if (!normalized) return ''
+  const parts = normalized.split(/[/\\]/).filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : normalized
+}
+
+/**
+ * 进程快照 → application 模式下拉选项（纯函数）。
+ * - 按 processSourceId 去重；pidCount 统计同 identity 进程数
+ * - 仅含 source_id / source_name / pidCount（无 command/args）
+ * - 排除 ownProcessId；非 darwin/win32 或空快照 → []
+ * - win32 id 形状预留，但 listPlatformProcesses 非 darwin 目前返回 []
+ *
+ * @param {Array} processes listPlatformProcesses 快照
+ * @returns {{ source_id: string, source_name: string, pidCount: number }[]}
+ */
+function mapProcessesToApplicationSources(
+  processes,
+  { platform = process.platform, ownProcessId = null } = {},
+) {
+  if (!['darwin', 'win32'].includes(platform)) return []
+  const byId = new Map()
+  for (const proc of processes ?? []) {
+    if (ownProcessId != null && Number(proc?.pid) === Number(ownProcessId)) continue
+    const sourceId = processSourceId(platform, proc)
+    if (!sourceId) continue
+    const identity = processIdentity(proc, platform)
+    const sourceName =
+      cleanSourceName(displayNameFromIdentity(identity)) || cleanSourceName(identity)
+    if (!sourceName) continue
+    const existing = byId.get(sourceId)
+    if (existing) {
+      existing.pidCount += 1
+    } else {
+      byId.set(sourceId, {
+        source_id: sourceId,
+        source_name: sourceName,
+        pidCount: 1,
+      })
+    }
+  }
+  return [...byId.values()].sort((left, right) => {
+    const byName = left.source_name.localeCompare(right.source_name, undefined, {
+      sensitivity: 'base',
+    })
+    return byName !== 0 ? byName : left.source_id.localeCompare(right.source_id)
+  })
+}
+
+/**
+ * 设置窗用：枚举当前可监听的 application sources（identity 去重）。
+ * 不跑 args ps；失败由调用方捕获。非 darwin 进程列表为空 → sources []。
+ *
+ * @returns {Promise<{ sources: Array, platform: string, note: string|null }>}
+ */
+async function listApplicationSources({
+  platform = process.platform,
+  run = execFileAsync,
+  ownProcessId = process.pid,
+} = {}) {
+  if (!['darwin', 'win32'].includes(platform)) {
+    return {
+      sources: [],
+      platform,
+      note: '当前平台不支持进程枚举（仅 macOS 可用）',
+    }
+  }
+  const processes = await listPlatformProcesses({ platform, run, includeArgs: false })
+  const sources = mapProcessesToApplicationSources(processes, { platform, ownProcessId })
+  const note =
+    platform !== 'darwin'
+      ? '当前平台进程枚举尚未实现'
+      : sources.length === 0
+        ? '未发现可选项（无运行中进程或枚举为空）'
+        : null
+  return { sources, platform, note }
+}
+
 module.exports = {
   discoverVoiceProcesses,
+  displayNameFromIdentity,
   identityMatches,
+  listApplicationSources,
   listPlatformProcesses,
+  mapProcessesToApplicationSources,
   mergeMacProcessCommands,
   parseMacCommandList,
   parseMacProcessList,

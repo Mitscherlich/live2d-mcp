@@ -1,0 +1,50 @@
+{
+  "style": "flat-bw-pictogram",
+  "iconSize": 44,
+  "framesPerPose": 8,
+  "fps": 8,
+  "poses": [
+    {
+      "id": "lie-flat",
+      "name": "躺平",
+      "gif": "lie-flat.gif",
+      "webm": "lie-flat.webm",
+      "framesDir": "frames/lie-flat"
+    },
+    {
+      "id": "stand-and-wave",
+      "name": "站立打招呼",
+      "gif": "stand-and-wave.gif",
+      "webm": "stand-and-wave.webm",
+      "framesDir": "frames/stand-and-wave"
+    },
+    {
+      "id": "squat-and-think",
+      "name": "蹲下思考",
+      "gif": "squat-and-think.gif",
+      "webm": "squat-and-think.webm",
+      "framesDir": "frames/squat-and-think"
+    },
+    {
+      "id": "bored-idle",
+      "name": "无聊发呆",
+      "gif": "bored-idle.gif",
+      "webm": "bored-idle.webm",
+      "framesDir": "frames/bored-idle"
+    },
+    {
+      "id": "chase-butterfly",
+      "name": "追蝴蝶",
+      "gif": "chase-butterfly.gif",
+      "webm": "chase-butterfly.webm",
+      "framesDir": "frames/chase-butterfly"
+    },
+    {
+      "id": "peek-from-edge",
+      "name": "从边缘伸头查看",
+      "gif": "peek-from-edge.gif",
+      "webm": "peek-from-edge.webm",
+      "framesDir": "frames/peek-from-edge"
+    }
+  ]
+}
