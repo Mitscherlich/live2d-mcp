@@ -31,7 +31,7 @@ Agent (Codex/Claude/…)
 mcp-server
     │  WebSocket (:8765)
     ▼
-renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
+renderer (Vite 浏览器 :4000)  ← Live2D (pixi.js + pixi-live2d-display)
 ```
 
 能力特点：

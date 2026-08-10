@@ -8,9 +8,9 @@
  *
  * logic 模式：直接 import renderer 口型绑定层（lip-sync.ts，Node type-stripping
  * 加载），用 mock writeMouth + 假钟连发 level/activity，断言：
- *   - level 注入改变嘴参写入值（ParamMouthOpenY 被调用且数值随 level 变化）
- *   - 900ms 短静音保持（speaking 期间 level 归零不立即切回）
- *   - 平滑收敛到 clamp01(level * gain)
+ *   - level 注入驱动多维嘴参（ParamMouthOpenY + ParamMouthForm）
+ *   - 峰值 cap（默认 0.62）、静音归零、900ms silenceHold
+ *   - 伪 viseme 相位使 form 非恒定
  *
  * e2e 模式：LIVE2D_VOICE_INJECT=1 启动 Electron（prod dist，独立 user-data-dir
  * 隔离单实例锁），经 CDP 在页面内调 window.live2d.injectVoice 注入事件
@@ -19,6 +19,8 @@
  * 无真实模型时写入为 no-op，但快照的 smoothed/lastMouthWrite 仍证明嘴参目标被驱动。
  */
 
+import { writeFileSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { launchElectron } from './lib/electron-harness.mjs'
 import {
   check,
@@ -30,17 +32,25 @@ import {
 } from './lib/proof-harness.mjs'
 
 const FRAME_MS = 16.7
+const PEAK_CAP = 0.62
+
+// 可选：将 mouth writes 快照落到环境变量指定路径（goal 验证用）
+const MOUTH_WRITES_OUT = process.env.LIVE2D_F3_MOUTH_WRITES_OUT || ''
 
 // ---------------------------------------------------------------- logic 模式
 async function runLogic() {
   console.log('[proof:logic] import renderer/src/lip-sync.ts（Node type-stripping）…')
   const { createVoiceLipSync } = await import('../renderer/src/lip-sync.ts')
+  const { selectVoiceBodyMotion, VOICE_DEFAULTS } = await import(
+    '../renderer/src/voice-state.ts'
+  )
 
   const writes = []
   let now = 0
   const lip = createVoiceLipSync({
     mouthParam: { id: 'ParamMouthOpenY', min: 0, max: 1 },
-    writeMouth: (paramId, value) => writes.push({ paramId, value }),
+    formParam: { id: 'ParamMouthForm', min: -1, max: 1 },
+    writeMouth: (paramId, value) => writes.push({ t: now, paramId, value }),
     now: () => now,
   })
   const frames = (n) => {
@@ -50,7 +60,7 @@ async function runLogic() {
     }
   }
 
-  console.log('[proof:logic] 场景 1：idle 不张嘴 → 注入 level 张嘴')
+  console.log('[proof:logic] 场景 1：idle 不张嘴 → 注入 level 张嘴（多维）')
   frames(10)
   check('idle 时无写入（嘴参目标恒 0）', writes.length === 0, `writes=${writes.length}`)
 
@@ -63,9 +73,15 @@ async function runLogic() {
   const snap1 = lip.snapshot()
   check('level 0.8 → speaking', snap1.activity === 'speaking', snap1.activity)
   check('嘴参被写入（mock setParameter 被调用）', writes.length > 0, `writes=${writes.length}`)
+
+  const openIds = writes.filter((w) => w.paramId === 'ParamMouthOpenY')
+  const formIds = writes.filter((w) => w.paramId === 'ParamMouthForm')
+  check('写入包含 ParamMouthOpenY', openIds.length > 0, `openWrites=${openIds.length}`)
+  check('写入包含 ParamMouthForm（多维）', formIds.length > 0, `formWrites=${formIds.length}`)
   check(
-    '全部写入落在 ParamMouthOpenY',
-    writes.every((w) => w.paramId === 'ParamMouthOpenY'),
+    '开合不超过 peakCap(+tol)',
+    openIds.every((w) => w.value <= PEAK_CAP + 0.02),
+    `maxOpen=${Math.max(...openIds.map((w) => w.value)).toFixed(3)}`,
   )
   check(
     'smoothed 收敛到 clamp01(0.8*2.8)=1',
@@ -73,23 +89,39 @@ async function runLogic() {
     `smoothed=${snap1.smoothedMouth.toFixed(4)}`,
   )
   check(
-    'lastMouthWrite ≈ 1',
-    Math.abs(snap1.lastMouthWrite - 1) < 0.02,
+    'lastMouthWrite ≤ peakCap（非满量程 1）',
+    snap1.lastMouthWrite <= PEAK_CAP + 0.02,
     `last=${snap1.lastMouthWrite.toFixed(4)}`,
   )
 
-  console.log('[proof:logic] 场景 2：嘴参值随 level 变化（0.8 → 0.2）')
+  console.log('[proof:logic] 场景 2：嘴参随 level / 相位变化（0.8 → 0.2）')
+  const formBefore = formIds.map((w) => w.value)
   lip.handleEvent({ type: 'audio-level', level: 0.2 })
   frames(40)
   const snap2 = lip.snapshot()
-  // clamp01(0.2*2.8) = 0.56
+  // clamp01(0.2*2.8) = 0.56 strength；open 经 cap/flutter 更低
   check(
     'level 0.2 → smoothed ≈ 0.56',
     Math.abs(snap2.smoothedMouth - 0.56) < 0.05,
     `smoothed=${snap2.smoothedMouth.toFixed(4)}`,
   )
-  const values = new Set(writes.map((w) => w.value.toFixed(3)))
-  check('写入值序列随 level 变化（非恒定）', values.size > 2, `distinct=${values.size}`)
+  const openValues = new Set(
+    writes.filter((w) => w.paramId === 'ParamMouthOpenY').map((w) => w.value.toFixed(3)),
+  )
+  check('开合写入值序列非恒定', openValues.size > 2, `distinctOpen=${openValues.size}`)
+  const formValues = new Set(
+    writes.filter((w) => w.paramId === 'ParamMouthForm').map((w) => w.value.toFixed(2)),
+  )
+  check('嘴形写入值随相位变化（非恒定）', formValues.size > 2, `distinctForm=${formValues.size}`)
+  check(
+    'form 快照字段存在且 phase 推进',
+    typeof snap2.lastFormWrite === 'number' && snap2.phase > 0,
+    `form=${snap2.lastFormWrite} phase=${snap2.phase}`,
+  )
+  check(
+    'speaking 期间 form 相对 formBefore 有新增写入',
+    writes.filter((w) => w.paramId === 'ParamMouthForm').length > formBefore.length,
+  )
 
   console.log('[proof:logic] 场景 3：900ms 短静音保持')
   lip.handleEvent({ type: 'audio-level', level: 0 })
@@ -99,8 +131,11 @@ async function runLogic() {
     lip.snapshot().activity === 'speaking',
     lip.snapshot().activity,
   )
-  check('静音期间嘴参目标平滑回落中', lip.snapshot().smoothedMouth < 0.2,
-    `smoothed=${lip.snapshot().smoothedMouth.toFixed(4)}`)
+  check(
+    '静音期间嘴参目标平滑回落中',
+    lip.snapshot().smoothedMouth < 0.2,
+    `smoothed=${lip.snapshot().smoothedMouth.toFixed(4)}`,
+  )
   frames(30) // 累计 ≈1000ms > 900ms hold
   check(
     '静音超 900ms 回落 listening',
@@ -108,8 +143,16 @@ async function runLogic() {
     lip.snapshot().activity,
   )
   frames(60)
-  check('回落后嘴闭（smoothed → 0）', lip.snapshot().smoothedMouth < 0.01,
-    `smoothed=${lip.snapshot().smoothedMouth.toFixed(4)}`)
+  check(
+    '回落后嘴闭（smoothed → 0）',
+    lip.snapshot().smoothedMouth < 0.01,
+    `smoothed=${lip.snapshot().smoothedMouth.toFixed(4)}`,
+  )
+  check(
+    '回落后 form 趋近中性/0',
+    Math.abs(lip.snapshot().lastFormWrite) < 0.08,
+    `form=${lip.snapshot().lastFormWrite}`,
+  )
 
   console.log('[proof:logic] 场景 4：会话结束立即 idle')
   lip.handleEvent({ type: 'audio-level', level: 0.7 })
@@ -117,9 +160,44 @@ async function runLogic() {
   lip.handleEvent({ type: 'state', state: { phase: 'inactive' } })
   check('session 结束 → idle', lip.snapshot().activity === 'idle', lip.snapshot().activity)
 
+  console.log('[proof:logic] 场景 5：speaking/idle 体态选择可区分（Hiyori Idle-only）')
+  const bodySpeaking = selectVoiceBodyMotion('speaking')
+  const bodyIdle = selectVoiceBodyMotion('idle')
+  check('body group 均为 Idle（资产限制）', bodySpeaking.group === 'Idle' && bodyIdle.group === 'Idle')
+  check(
+    'speaking 与 idle 的 index/priority 不同',
+    bodySpeaking.index !== bodyIdle.index || bodySpeaking.priority !== bodyIdle.priority,
+    JSON.stringify({ bodySpeaking, bodyIdle }),
+  )
+  check('VOICE_DEFAULTS.peakCap === 0.62', VOICE_DEFAULTS.peakCap === PEAK_CAP)
+
   const snap = lip.snapshot()
-  console.log(`[proof:logic] 事件 ${snap.events} 条，嘴参写入 ${snap.mouthWrites} 次`)
-  check('事件计数与写入计数合理', snap.events >= 6 && snap.mouthWrites > 10)
+  console.log(
+    `[proof:logic] 事件 ${snap.events} 条，嘴参写入 ${snap.mouthWrites} 次` +
+      `（open=${snap.openWrites}, form=${snap.formWrites}）`,
+  )
+  check(
+    '事件计数与多维写入计数合理',
+    snap.events >= 6 && snap.openWrites > 5 && snap.formWrites > 2,
+  )
+
+  if (MOUTH_WRITES_OUT) {
+    mkdirSync(dirname(MOUTH_WRITES_OUT), { recursive: true })
+    writeFileSync(
+      MOUTH_WRITES_OUT,
+      JSON.stringify(
+        {
+          writes,
+          snapshot: snap,
+          body: { speaking: bodySpeaking, idle: bodyIdle },
+          peakCap: PEAK_CAP,
+        },
+        null,
+        2,
+      ),
+    )
+    console.log(`[proof:logic] mouth writes → ${MOUTH_WRITES_OUT}`)
+  }
 }
 
 // ----------------------------------------------------------------- e2e 模式
@@ -169,17 +247,26 @@ async function runE2e() {
     console.log('[proof:e2e] 注入 level 0.8 后 500ms:', JSON.stringify(snap1))
     check('activity → speaking', snap1.activity === 'speaking', snap1.activity)
     check('smoothed 显著上升（> 0.5）', snap1.smoothedMouth > 0.5, `smoothed=${snap1.smoothedMouth}`)
-    check('嘴参写入计数递增', snap1.mouthWrites > snap0.mouthWrites,
-      `${snap0.mouthWrites} → ${snap1.mouthWrites}`)
+    check(
+      '嘴参写入计数递增',
+      snap1.mouthWrites > snap0.mouthWrites,
+      `${snap0.mouthWrites} → ${snap1.mouthWrites}`,
+    )
     check('事件计数递增', snap1.events > snap0.events, `${snap0.events} → ${snap1.events}`)
+    if (typeof snap1.phase === 'number') {
+      check('伪 viseme phase 推进', snap1.phase > 0, `phase=${snap1.phase}`)
+    }
 
     // level 变化 → 嘴参目标值变化
     await evaluate(`window.live2d.injectVoice({ type: 'audio-level', level: 0.2 })`)
     await sleep(600)
     const snap2 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] 注入 level 0.2 后 600ms:', JSON.stringify(snap2))
-    check('嘴参目标随 level 下降（< 0.7）', snap2.lastMouthWrite < 0.7,
-      `last=${snap2.lastMouthWrite}`)
+    check(
+      '嘴参目标随 level 下降（< 0.7）',
+      snap2.lastMouthWrite < 0.7,
+      `last=${snap2.lastMouthWrite}`,
+    )
 
     // 短静音保持：level 归零后 400ms 仍 speaking
     await evaluate(`window.live2d.injectVoice({ type: 'audio-level', level: 0 })`)
@@ -202,8 +289,10 @@ async function runE2e() {
     const snap5 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
     console.log('[proof:e2e] session inactive 后:', JSON.stringify(snap5))
     check('session 结束 → idle', snap5.activity === 'idle', snap5.activity)
-    check('模型状态可见（本环境预期无模型 → 写入 no-op 但目标值仍被驱动）',
-      typeof snap5.modelLoaded === 'boolean')
+    check(
+      '模型状态可见（本环境预期无模型 → 写入 no-op 但目标值仍被驱动）',
+      typeof snap5.modelLoaded === 'boolean',
+    )
 
     // 非法注入被 main 规范化拒绝（事件计数不再增长）
     const before = snap5.events
@@ -211,8 +300,11 @@ async function runE2e() {
     await evaluate(`window.live2d.injectVoice({ type: 'motion', group: 'Idle' })`)
     await sleep(300)
     const snap6 = await evaluate(`window.__live2dVoiceDebug.snapshot()`)
-    check('非法负载被 main 规范化丢弃', snap6.events === before,
-      `events ${before} → ${snap6.events}`)
+    check(
+      '非法负载被 main 规范化丢弃',
+      snap6.events === before,
+      `events ${before} → ${snap6.events}`,
+    )
 
     check('主进程日志确认注入模式开启', app.appLog().includes('voice 测试注入已开启'))
   } finally {
@@ -226,7 +318,7 @@ async function runE2e() {
 
 // --------------------------------------------------------------------- main
 const withE2e = process.argv.includes('--e2e')
-console.log('=== F3 口型证据：注入 level/activity → 嘴参目标值变化 ===')
+console.log('=== F3 口型证据：伪 viseme 多维嘴参 + silenceHold ===')
 await runLogic()
 if (withE2e) {
   console.log('')
@@ -238,5 +330,8 @@ if (failures > 0) {
   console.error(`✘ F3 证据失败：${failures}/${checks} 项断言未过`)
   process.exit(1)
 }
-console.log(`✔ F3 证据通过（${checks} 项断言）：注入 level/activity 可改变嘴参目标（mock 与` +
-  (withE2e ? ' CDP 端到端' : '') + '证据）')
+console.log(
+  `✔ F3 证据通过（${checks} 项断言）：多维口型（open+form）与 silenceHold` +
+    (withE2e ? ' + CDP 端到端' : '') +
+    ' 证据',
+)

@@ -10,8 +10,11 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
   discoverVoiceProcesses,
+  displayNameFromIdentity,
   identityMatches,
+  listApplicationSources,
   listPlatformProcesses,
+  mapProcessesToApplicationSources,
   parseMacCommandList,
   parseMacProcessList,
   selectVoiceProcessTree,
@@ -136,6 +139,114 @@ test('listPlatformProcesses：includeArgs:false 只跑 comm 那一次 ps（appli
   assert.deepEqual(invocations, ['pid=,ppid=,comm='], '不得执行 args 那一次 ps')
   assert.equal(list.length, 6)
   assert.equal(list.find((p) => p.pid === 200).command, '', 'command 留空（该模式无人消费）')
+})
+
+test('mapProcessesToApplicationSources：同 identity 多 PID 去重，无 command 字段', () => {
+  const processes = [
+    {
+      pid: 10,
+      parentId: 1,
+      name: '/Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic',
+      executable: '/Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic',
+      command: 'should-not-appear --secret',
+    },
+    {
+      pid: 11,
+      parentId: 10,
+      name: '/Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic',
+      executable: '/Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic',
+      command: 'another-args',
+    },
+    {
+      pid: 20,
+      parentId: 1,
+      name: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT',
+      executable: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT',
+      command: '',
+    },
+    { pid: 99, parentId: 1, name: 'self', executable: 'self', command: '' },
+  ]
+  const list = mapProcessesToApplicationSources(processes, {
+    platform: 'darwin',
+    ownProcessId: 99,
+  })
+  assert.equal(list.length, 2)
+  const netease = list.find((item) => item.source_name === 'NeteaseMusic')
+  const chatgpt = list.find((item) => item.source_name === 'ChatGPT')
+  assert.ok(netease)
+  assert.ok(chatgpt)
+  assert.equal(netease.pidCount, 2)
+  assert.equal(chatgpt.pidCount, 1)
+  assert.equal(
+    netease.source_id,
+    processSourceId('darwin', processes[0]),
+  )
+  assert.match(netease.source_id, /^process:darwin:[A-Za-z0-9_-]+$/)
+  for (const item of list) {
+    assert.deepEqual(Object.keys(item).sort(), ['pidCount', 'source_id', 'source_name'])
+    assert.equal('command' in item, false)
+    assert.equal('args' in item, false)
+  }
+  // 按 source_name 排序：ChatGPT 在 NeteaseMusic 前
+  assert.equal(list[0].source_name, 'ChatGPT')
+  assert.equal(list[1].source_name, 'NeteaseMusic')
+  // 自身 pid 已排除
+  assert.equal(list.some((item) => item.source_name === 'self'), false)
+})
+
+test('mapProcessesToApplicationSources：非 darwin / 空输入 → []', () => {
+  const sample = [
+    { pid: 1, parentId: 0, name: 'NeteaseMusic', executable: 'NeteaseMusic', command: '' },
+  ]
+  assert.deepEqual(mapProcessesToApplicationSources(sample, { platform: 'linux' }), [])
+  assert.deepEqual(mapProcessesToApplicationSources([], { platform: 'darwin' }), [])
+  assert.deepEqual(mapProcessesToApplicationSources(null, { platform: 'darwin' }), [])
+})
+
+test('displayNameFromIdentity：路径取 basename', () => {
+  assert.equal(
+    displayNameFromIdentity('/Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic'),
+    'NeteaseMusic',
+  )
+  assert.equal(displayNameFromIdentity('  codex  '), 'codex')
+  assert.equal(displayNameFromIdentity(''), '')
+})
+
+test('listApplicationSources：注入 ps 快照时返回去重 sources，且不含 command', async () => {
+  const run = async (_cmd, args) => {
+    assert.equal(args[1], 'pid=,ppid=,comm=', '设置列表不得请求完整 args')
+    return {
+      stdout: `  10     1 /Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic
+  11    10 /Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic
+  20     1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+`,
+    }
+  }
+  const result = await listApplicationSources({
+    platform: 'darwin',
+    run,
+    ownProcessId: 999,
+  })
+  assert.equal(result.platform, 'darwin')
+  assert.equal(result.note, null)
+  assert.equal(result.sources.length, 2)
+  assert.equal(result.sources.find((s) => s.source_name === 'NeteaseMusic').pidCount, 2)
+  for (const item of result.sources) {
+    assert.deepEqual(Object.keys(item).sort(), ['pidCount', 'source_id', 'source_name'])
+  }
+})
+
+test('listApplicationSources：非 darwin → 空列表 + note', async () => {
+  const result = await listApplicationSources({
+    platform: 'linux',
+    run: async () => {
+      throw new Error('不应调用 ps')
+    },
+    ownProcessId: 1,
+  })
+  assert.deepEqual(result.sources, [])
+  assert.equal(result.platform, 'linux')
+  assert.match(result.note, /不支持|macOS/)
 })
 
 test('discoverVoiceProcesses：voice source → sourceId/pattern 分派', async () => {

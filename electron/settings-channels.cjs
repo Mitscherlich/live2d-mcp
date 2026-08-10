@@ -18,10 +18,13 @@ const SETTINGS_GET_CHANNEL = 'live2d:settings:get'
 const SETTINGS_SAVE_CHANNEL = 'live2d:settings:save'
 const SETTINGS_COPY_CHANNEL = 'live2d:settings:copy-command'
 const SETTINGS_CHANGED_CHANNEL = 'live2d:settings:changed'
+/** 设置窗拉取当前运行中 application sources（identity 去重列表） */
+const SETTINGS_LIST_SOURCES_CHANNEL = 'live2d:settings:list-sources'
 
 module.exports = {
   SETTINGS_GET_CHANNEL,
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_COPY_CHANNEL,
   SETTINGS_CHANGED_CHANNEL,
+  SETTINGS_LIST_SOURCES_CHANNEL,
 }

@@ -1,0 +1,705 @@
+{
+  "meta": {
+    "title": "Live2D Desktop Companion · Architecture Graph",
+    "version": "1.0.0",
+    "sourceOfTruth": [
+      "docs/ARCHITECTURE.md",
+      "SPEC.md",
+      "electron/",
+      "renderer/src/",
+      "native/"
+    ],
+    "description": "Machine-readable architecture map for AI agents: nodes are real modules/layers, edges are control or data paths, flows are ordered end-to-end sequences."
+  },
+  "nodes": [
+    {
+      "id": "mcp-client",
+      "label": "MCP Client",
+      "layer": "external",
+      "kind": "actor",
+      "file": null,
+      "description": "Codex / Claude Code / Hermes 等 Streamable HTTP MCP 客户端，连接 http://127.0.0.1:47832/mcp"
+    },
+    {
+      "id": "http-client",
+      "label": "HTTP Client",
+      "layer": "external",
+      "kind": "actor",
+      "file": null,
+      "description": "curl / proof 脚本等：GET /health、POST /events 注入 state 与 audio-level"
+    },
+    {
+      "id": "agent-audio-process",
+      "label": "Agent Audio Process",
+      "layer": "external",
+      "kind": "actor",
+      "file": null,
+      "description": "出声进程（codex / chatgpt / openai 类或自定义 regex 匹配），被 macOS process tap 捕获输出电平"
+    },
+    {
+      "id": "native-helper",
+      "label": "Native Audio Helper",
+      "layer": "native",
+      "kind": "process",
+      "file": "native/macos/Live2dAudioListener.mm",
+      "description": "Core Audio process tap helper；内存计算归一化 level∈[0,1]，NDJSON stdout；不采麦克风、不落盘、不上传"
+    },
+    {
+      "id": "electron-main",
+      "label": "Electron Main",
+      "layer": "main",
+      "kind": "orchestrator",
+      "file": "electron/main.cjs",
+      "description": "应用生命周期编排：角色窗/设置窗/托盘、startBridge、sendVoiceEvent、sendRendererCommand、listener 启停"
+    },
+    {
+      "id": "bridge-server",
+      "label": "Bridge Server",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/bridge-server.cjs",
+      "description": "loopback HTTP（默认 127.0.0.1:47832）：GET /health、POST /events、/mcp 委托；Host/Origin 防线；body ≤64KB"
+    },
+    {
+      "id": "mcp-server",
+      "label": "MCP Server",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/mcp-server.cjs",
+      "description": "Streamable HTTP MCP server 名 live2d-companion；工具 get_status/control_window/get_model_info/set_expression/play_motion/look_at/set_parameter/reset；无 TTS"
+    },
+    {
+      "id": "mcp-protocol",
+      "label": "MCP Protocol",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/mcp-protocol.cjs",
+      "description": "零依赖 MCP_PATH 与 JSON-RPC 错误出口；bridge 与 settings-view 共用，避免拉入 MCP SDK"
+    },
+    {
+      "id": "voice-events",
+      "label": "Voice Events",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/voice-events.cjs",
+      "description": "normalizeVoiceEvent 权威规范化：state / audio-level 白名单、level clamp [0,1]、phase/activity 枚举"
+    },
+    {
+      "id": "cmd-channel",
+      "label": "Command Channel",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/renderer-command-channel.cjs",
+      "description": "main↔renderer 请求-响应关联器：requestId、超时 2s、ready 标志、窗口销毁冲销；IPC live2d:command"
+    },
+    {
+      "id": "cmd-protocol",
+      "label": "Command Protocol",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/renderer-commands.cjs",
+      "description": "命令帧类型白名单（getModelInfo/setExpression/playMotion/lookAt/setParameter/reset）与结果帧规范化"
+    },
+    {
+      "id": "audio-listener",
+      "label": "Audio Listener Factory",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/audio-listener.cjs",
+      "description": "createAudioListener：按 voice source 模式决定 native listener 或 disabled（external）"
+    },
+    {
+      "id": "native-process-listener",
+      "label": "Native Process Listener",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/native-process-audio-listener.cjs",
+      "description": "spawn helper、解析 NDJSON、onSession/onLevel/onStatus；静音连续 0 抑制"
+    },
+    {
+      "id": "process-discovery",
+      "label": "Process Discovery",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/process-discovery.cjs",
+      "description": "ps 快照匹配 automatic/application/custom 目标进程；捕获前后不同轮询间隔"
+    },
+    {
+      "id": "voice-source",
+      "label": "Voice Source Config",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/voice-source.cjs",
+      "description": "resolveVoiceSourceConfig：automatic|application|custom|external；LIVE2D_* env 覆盖"
+    },
+    {
+      "id": "listener-status",
+      "label": "Listener Status",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/listener-status.cjs",
+      "description": "buildListenerSummary：/health 与 MCP get_status 共享真实 source/status"
+    },
+    {
+      "id": "settings-store",
+      "label": "Settings Store",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/settings-store.cjs",
+      "description": "userData/settings.json 原子读写：voiceSource + window bounds/scale；sanitize 后 temp+rename"
+    },
+    {
+      "id": "settings-view",
+      "label": "Settings ViewModel",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/settings-view.cjs",
+      "description": "构建设置页模型：实际 MCP URL、Codex 命令、voice 表单字段"
+    },
+    {
+      "id": "settings-channels",
+      "label": "Settings Channels",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/settings-channels.cjs",
+      "description": "设置窗 IPC 通道常量与主进程 handler 注册"
+    },
+    {
+      "id": "tray",
+      "label": "System Tray",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/tray.cjs",
+      "description": "托盘菜单：显示/隐藏角色窗、重置位置、打开设置、退出；关闭角色窗 hide 保活"
+    },
+    {
+      "id": "window-interactions",
+      "label": "Window Interactions",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/window-interactions.cjs",
+      "description": "角色窗拖拽/缩放/全局鼠标位置 IPC 主进程侧"
+    },
+    {
+      "id": "renderer-protocol",
+      "label": "Renderer Protocol",
+      "layer": "main",
+      "kind": "module",
+      "file": "electron/renderer-protocol.cjs",
+      "description": "live2d:// 自定义协议，向角色窗提供 renderer 静态资源"
+    },
+    {
+      "id": "avatar-preload",
+      "label": "Avatar Preload",
+      "layer": "preload",
+      "kind": "module",
+      "file": "electron/preload.cjs",
+      "description": "contextBridge 窄 API：onVoiceEvent、onCommand、窗口交互；不暴露 fs/任意 IPC"
+    },
+    {
+      "id": "settings-preload",
+      "label": "Settings Preload",
+      "layer": "preload",
+      "kind": "module",
+      "file": "electron/settings-preload.cjs",
+      "description": "设置窗 sandbox preload：读/写设置、复制 Codex 命令"
+    },
+    {
+      "id": "settings-ui",
+      "label": "Settings UI",
+      "layer": "ui",
+      "kind": "view",
+      "file": "electron/settings.html",
+      "description": "最小设置页：voice source 模式、MCP URL 展示、保存后热更新 listener"
+    },
+    {
+      "id": "renderer-main",
+      "label": "Renderer Entry",
+      "layer": "renderer",
+      "kind": "module",
+      "file": "renderer/src/main.ts",
+      "description": "初始化 Live2DApp、voice 口型、命令通道、桌面交互与按钮组"
+    },
+    {
+      "id": "voice-state",
+      "label": "Voice State Machine",
+      "layer": "renderer",
+      "kind": "module",
+      "file": "renderer/src/voice-state.ts",
+      "description": "idle/listening/speaking 推导：level 阈值 0.018、静音保持 900ms；嘴参 id 解析"
+    },
+    {
+      "id": "lip-sync",
+      "label": "Lip Sync",
+      "layer": "renderer",
+      "kind": "module",
+      "file": "renderer/src/lip-sync.ts",
+      "description": "amplitude 平滑 + 伪 viseme → ParamMouthOpenY + ParamMouthForm；PIXI ticker 写入"
+    },
+    {
+      "id": "live2d-app",
+      "label": "Live2D App",
+      "layer": "renderer",
+      "kind": "module",
+      "file": "renderer/src/live2d-app.ts",
+      "description": "pixi.js + pixi-live2d-display：加载 Cubism 模型；expression/motion/parameter/look_at"
+    },
+    {
+      "id": "desktop-interactions",
+      "label": "Desktop Interactions",
+      "layer": "renderer",
+      "kind": "module",
+      "file": "renderer/src/desktop-interactions.ts",
+      "description": "拖拽/缩放/鼠标跟随视线的纯函数与事件判定"
+    },
+    {
+      "id": "settings-json",
+      "label": "settings.json",
+      "layer": "storage",
+      "kind": "storage",
+      "file": null,
+      "description": "Electron userData 持久化：version、voiceSource、window {x,y,width,height,scale}"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-mcp-client-bridge",
+      "source": "mcp-client",
+      "target": "bridge-server",
+      "label": "HTTP /mcp",
+      "kind": "control"
+    },
+    {
+      "id": "e-http-health",
+      "source": "http-client",
+      "target": "bridge-server",
+      "label": "GET /health",
+      "kind": "data"
+    },
+    {
+      "id": "e-http-events",
+      "source": "http-client",
+      "target": "bridge-server",
+      "label": "POST /events",
+      "kind": "data"
+    },
+    {
+      "id": "e-bridge-mcp",
+      "source": "bridge-server",
+      "target": "mcp-server",
+      "label": "mcpHandler",
+      "kind": "control"
+    },
+    {
+      "id": "e-mcp-protocol",
+      "source": "mcp-server",
+      "target": "mcp-protocol",
+      "label": "path + RPC errors",
+      "kind": "depends"
+    },
+    {
+      "id": "e-bridge-protocol",
+      "source": "bridge-server",
+      "target": "mcp-protocol",
+      "label": "MCP_PATH",
+      "kind": "depends"
+    },
+    {
+      "id": "e-bridge-voice-norm",
+      "source": "bridge-server",
+      "target": "voice-events",
+      "label": "normalizeVoiceEvent",
+      "kind": "data"
+    },
+    {
+      "id": "e-bridge-main-events",
+      "source": "bridge-server",
+      "target": "electron-main",
+      "label": "onEvent → sendVoiceEvent",
+      "kind": "data"
+    },
+    {
+      "id": "e-mcp-main",
+      "source": "mcp-server",
+      "target": "electron-main",
+      "label": "controller callbacks",
+      "kind": "control"
+    },
+    {
+      "id": "e-main-cmd-channel",
+      "source": "electron-main",
+      "target": "cmd-channel",
+      "label": "sendRendererCommand",
+      "kind": "control"
+    },
+    {
+      "id": "e-cmd-channel-protocol",
+      "source": "cmd-channel",
+      "target": "cmd-protocol",
+      "label": "frame validate",
+      "kind": "depends"
+    },
+    {
+      "id": "e-cmd-preload",
+      "source": "cmd-channel",
+      "target": "avatar-preload",
+      "label": "IPC live2d:command",
+      "kind": "control"
+    },
+    {
+      "id": "e-main-voice-norm",
+      "source": "electron-main",
+      "target": "voice-events",
+      "label": "normalize before IPC",
+      "kind": "data"
+    },
+    {
+      "id": "e-main-voice-preload",
+      "source": "electron-main",
+      "target": "avatar-preload",
+      "label": "IPC live2d:voice",
+      "kind": "data"
+    },
+    {
+      "id": "e-main-audio-listener",
+      "source": "electron-main",
+      "target": "audio-listener",
+      "label": "createAudioListener",
+      "kind": "control"
+    },
+    {
+      "id": "e-main-voice-source",
+      "source": "electron-main",
+      "target": "voice-source",
+      "label": "resolveVoiceSourceConfig",
+      "kind": "depends"
+    },
+    {
+      "id": "e-audio-native-listener",
+      "source": "audio-listener",
+      "target": "native-process-listener",
+      "label": "non-external modes",
+      "kind": "control"
+    },
+    {
+      "id": "e-native-listener-discovery",
+      "source": "native-process-listener",
+      "target": "process-discovery",
+      "label": "match target pid",
+      "kind": "depends"
+    },
+    {
+      "id": "e-native-listener-helper",
+      "source": "native-process-listener",
+      "target": "native-helper",
+      "label": "spawn + NDJSON",
+      "kind": "data"
+    },
+    {
+      "id": "e-agent-helper",
+      "source": "agent-audio-process",
+      "target": "native-helper",
+      "label": "process audio tap",
+      "kind": "data"
+    },
+    {
+      "id": "e-native-listener-main",
+      "source": "native-process-listener",
+      "target": "electron-main",
+      "label": "onSession / onLevel",
+      "kind": "data"
+    },
+    {
+      "id": "e-main-listener-status",
+      "source": "electron-main",
+      "target": "listener-status",
+      "label": "buildListenerSummary",
+      "kind": "data"
+    },
+    {
+      "id": "e-bridge-health-status",
+      "source": "bridge-server",
+      "target": "listener-status",
+      "label": "/health.listener",
+      "kind": "data"
+    },
+    {
+      "id": "e-main-tray",
+      "source": "electron-main",
+      "target": "tray",
+      "label": "createTrayController",
+      "kind": "control"
+    },
+    {
+      "id": "e-tray-main",
+      "source": "tray",
+      "target": "electron-main",
+      "label": "show/hide/settings/quit",
+      "kind": "control"
+    },
+    {
+      "id": "e-main-settings-store",
+      "source": "electron-main",
+      "target": "settings-store",
+      "label": "load / save",
+      "kind": "data"
+    },
+    {
+      "id": "e-settings-store-json",
+      "source": "settings-store",
+      "target": "settings-json",
+      "label": "atomic write",
+      "kind": "data"
+    },
+    {
+      "id": "e-main-settings-view",
+      "source": "electron-main",
+      "target": "settings-view",
+      "label": "buildSettingsViewModel",
+      "kind": "depends"
+    },
+    {
+      "id": "e-main-settings-channels",
+      "source": "electron-main",
+      "target": "settings-channels",
+      "label": "register handlers",
+      "kind": "control"
+    },
+    {
+      "id": "e-settings-channels-preload",
+      "source": "settings-channels",
+      "target": "settings-preload",
+      "label": "settings IPC",
+      "kind": "control"
+    },
+    {
+      "id": "e-settings-preload-ui",
+      "source": "settings-preload",
+      "target": "settings-ui",
+      "label": "window.live2dSettings",
+      "kind": "control"
+    },
+    {
+      "id": "e-main-renderer-protocol",
+      "source": "electron-main",
+      "target": "renderer-protocol",
+      "label": "register live2d://",
+      "kind": "depends"
+    },
+    {
+      "id": "e-main-window-ix",
+      "source": "electron-main",
+      "target": "window-interactions",
+      "label": "bounds / scale IPC",
+      "kind": "control"
+    },
+    {
+      "id": "e-preload-renderer",
+      "source": "avatar-preload",
+      "target": "renderer-main",
+      "label": "window.live2d",
+      "kind": "control"
+    },
+    {
+      "id": "e-renderer-voice-state",
+      "source": "renderer-main",
+      "target": "voice-state",
+      "label": "activity + mouth ids",
+      "kind": "data"
+    },
+    {
+      "id": "e-renderer-lip-sync",
+      "source": "renderer-main",
+      "target": "lip-sync",
+      "label": "createVoiceLipSync",
+      "kind": "data"
+    },
+    {
+      "id": "e-lip-sync-voice-state",
+      "source": "lip-sync",
+      "target": "voice-state",
+      "label": "thresholds / mapping",
+      "kind": "depends"
+    },
+    {
+      "id": "e-renderer-live2d",
+      "source": "renderer-main",
+      "target": "live2d-app",
+      "label": "model + commands",
+      "kind": "control"
+    },
+    {
+      "id": "e-lip-sync-live2d",
+      "source": "lip-sync",
+      "target": "live2d-app",
+      "label": "mouth params",
+      "kind": "data"
+    },
+    {
+      "id": "e-renderer-desktop",
+      "source": "renderer-main",
+      "target": "desktop-interactions",
+      "label": "drag / scale / look",
+      "kind": "control"
+    },
+    {
+      "id": "e-desktop-preload",
+      "source": "desktop-interactions",
+      "target": "avatar-preload",
+      "label": "move/scale IPC",
+      "kind": "control"
+    },
+    {
+      "id": "e-cmd-result",
+      "source": "renderer-main",
+      "target": "avatar-preload",
+      "label": "live2d:command-result",
+      "kind": "control"
+    }
+  ],
+  "flows": [
+    {
+      "id": "flow-mcp-visual-command",
+      "name": "MCP 视觉命令 → Renderer",
+      "summary": "Agent 经 Streamable HTTP MCP 调用表情/动作等工具，main 经命令通道转发到 Live2D renderer 执行。",
+      "steps": [
+        "mcp-client",
+        "bridge-server",
+        "mcp-server",
+        "electron-main",
+        "cmd-channel",
+        "avatar-preload",
+        "renderer-main",
+        "live2d-app"
+      ]
+    },
+    {
+      "id": "flow-mcp-window-control",
+      "name": "MCP 窗口控制",
+      "summary": "control_window show|hide|toggle 由 main 直接作用角色窗，不经 renderer 命令通道。",
+      "steps": [
+        "mcp-client",
+        "bridge-server",
+        "mcp-server",
+        "electron-main"
+      ]
+    },
+    {
+      "id": "flow-events-lipsync",
+      "name": "POST /events → 口型",
+      "summary": "外部 HTTP 注入 state/audio-level，经权威规范化与 IPC 到达 renderer 口型链路。",
+      "steps": [
+        "http-client",
+        "bridge-server",
+        "voice-events",
+        "electron-main",
+        "avatar-preload",
+        "renderer-main",
+        "voice-state",
+        "lip-sync",
+        "live2d-app"
+      ]
+    },
+    {
+      "id": "flow-native-lipsync",
+      "name": "Native Listener → 口型",
+      "summary": "macOS process tap 捕获 agent 出声进程电平，与 /events 汇合到同一 sendVoiceEvent 路径驱动嘴型。",
+      "steps": [
+        "agent-audio-process",
+        "native-helper",
+        "native-process-listener",
+        "electron-main",
+        "voice-events",
+        "avatar-preload",
+        "renderer-main",
+        "voice-state",
+        "lip-sync",
+        "live2d-app"
+      ]
+    },
+    {
+      "id": "flow-health-status",
+      "name": "GET /health 状态摘要",
+      "summary": "只读健康检查：bridge 端口、voice 摘要、listener 真实状态、MCP URL 等（不含用户内容）。",
+      "steps": [
+        "http-client",
+        "bridge-server",
+        "electron-main",
+        "listener-status"
+      ]
+    },
+    {
+      "id": "flow-mcp-get-status",
+      "name": "MCP get_status",
+      "summary": "只读状态工具：窗口/bridge/voice/listener/mcp；模型就绪经命令通道往返 renderer。",
+      "steps": [
+        "mcp-client",
+        "bridge-server",
+        "mcp-server",
+        "electron-main",
+        "listener-status",
+        "cmd-channel",
+        "avatar-preload",
+        "renderer-main",
+        "live2d-app"
+      ]
+    },
+    {
+      "id": "flow-tray-lifecycle",
+      "name": "托盘与窗口生命周期",
+      "summary": "托盘显示/隐藏/设置/退出；关闭角色窗 hide 保活 bridge 与 renderer。",
+      "steps": [
+        "tray",
+        "electron-main",
+        "avatar-preload",
+        "renderer-main"
+      ]
+    },
+    {
+      "id": "flow-settings-voice-update",
+      "name": "设置页更新 Voice Source",
+      "summary": "设置 UI 保存 voice source → 原子写入 settings.json → 无 env 覆盖时热重启 listener。",
+      "steps": [
+        "settings-ui",
+        "settings-preload",
+        "settings-channels",
+        "electron-main",
+        "settings-store",
+        "settings-json",
+        "voice-source",
+        "audio-listener",
+        "native-process-listener"
+      ]
+    },
+    {
+      "id": "flow-desktop-drag-scale",
+      "name": "桌面拖拽 / 缩放",
+      "summary": "renderer 交互判定后经 preload 窄 IPC 请求 main 调整角色窗 bounds/scale。",
+      "steps": [
+        "renderer-main",
+        "desktop-interactions",
+        "avatar-preload",
+        "window-interactions",
+        "electron-main"
+      ]
+    },
+    {
+      "id": "flow-app-boot",
+      "name": "应用启动编排",
+      "summary": "main 注册协议与通道，启动 bridge/MCP/listener，创建角色窗经 preload 加载 Live2D。",
+      "steps": [
+        "electron-main",
+        "renderer-protocol",
+        "bridge-server",
+        "mcp-server",
+        "voice-source",
+        "audio-listener",
+        "settings-store",
+        "tray",
+        "avatar-preload",
+        "renderer-main",
+        "live2d-app"
+      ]
+    }
+  ]
+}

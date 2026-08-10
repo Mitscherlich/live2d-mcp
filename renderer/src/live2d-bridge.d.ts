@@ -83,11 +83,18 @@ declare global {
         level: number
         smoothedMouth: number
         mouthParamId: string | null
+        formParamId: string | null
         lastMouthWrite: number
+        lastFormWrite: number
+        phase: number
+        activeViseme: number
         mouthWrites: number
+        openWrites: number
+        formWrites: number
         events: number
         modelLoaded: boolean
         injectEnabled: boolean
+        bodyMotion?: { group: string; index: number; priority: number }
       }
     }
     /** renderer 命令通道调试快照（scripts/f5-mcp-proof.mjs 经 CDP 读取） */

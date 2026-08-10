@@ -47,8 +47,8 @@ test('hostAllowed：仅 loopback Host 放行（SPEC §5.5）', () => {
 test('originAllowed：无 Origin 放行（curl），仅受信本机 origin 放行', () => {
   assert.equal(originAllowed(null), true)
   assert.equal(originAllowed(undefined), true)
-  assert.equal(originAllowed('http://127.0.0.1:5173'), true)
-  assert.equal(originAllowed('http://localhost:5173'), true)
+  assert.equal(originAllowed('http://127.0.0.1:4000'), true)
+  assert.equal(originAllowed('http://localhost:4000'), true)
   assert.equal(originAllowed('https://[::1]:8443'), true)
   assert.equal(originAllowed('https://evil.com'), false)
   assert.equal(originAllowed('http://127.0.0.1.evil.com'), false)
@@ -253,10 +253,10 @@ test('POST /events：非受信 Origin → 403；受信本机 Origin → 202 且�
     const trusted = await postJson(
       `${baseUrl}/events`,
       { type: 'audio-level', level: 0.5 },
-      { origin: 'http://localhost:5173' },
+      { origin: 'http://localhost:4000' },
     )
     assert.equal(trusted.status, 202)
-    assert.equal(trusted.headers.get('access-control-allow-origin'), 'http://localhost:5173')
+    assert.equal(trusted.headers.get('access-control-allow-origin'), 'http://localhost:4000')
   } finally {
     await close()
   }
@@ -267,7 +267,7 @@ test('OPTIONS /events：受信 origin → 204 预检；无 origin / 非受信 �
   try {
     const preflight = await fetch(`${baseUrl}/events`, {
       method: 'OPTIONS',
-      headers: { origin: 'http://127.0.0.1:5173' },
+      headers: { origin: 'http://127.0.0.1:4000' },
     })
     assert.equal(preflight.status, 204)
     assert.equal(preflight.headers.get('access-control-allow-methods'), 'POST, OPTIONS')
@@ -358,7 +358,7 @@ test('/mcp：Origin 校验作用于写路径（与 /events 同口径），Host �
     const trusted = await postJson(
       `${baseUrl}/mcp`,
       { jsonrpc: '2.0', id: 1, method: 'ping' },
-      { origin: 'http://127.0.0.1:5173' },
+      { origin: 'http://127.0.0.1:4000' },
     )
     assert.equal(trusted.status, 200)
 

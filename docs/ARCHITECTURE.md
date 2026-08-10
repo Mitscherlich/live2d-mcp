@@ -53,8 +53,8 @@ Electron main (:47832 loopback)
 │  Renderer（Live2D）                                         │
 │  · pixi.js + pixi-live2d-display                            │
 │  · expression / motion / parameter / look_at                │
-│  · amplitude lip-sync → ParamMouthOpenY（或等效嘴参）         │
-│  · idle / listening / speaking 状态行为                     │
+│  · amplitude 伪 viseme → ParamMouthOpenY + ParamMouthForm     │
+│  · idle / listening / speaking 状态行为（Idle index/priority）│
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,7 +69,7 @@ Electron main (:47832 loopback)
 | ① Native listener | 发现受支持的语音进程（macOS 进程输出 tap），在内存中计算归一化输出电平 `level∈[0,1]` | 不采麦克风；音频样本仅用于算 level，**不落盘、不上传**；external 模式下该层可整体为空 |
 | ② Electron main | 应用生命周期：窗口、托盘、设置；承载 loopback bridge、Streamable HTTP MCP、voice source 解析 | 唯一拥有 OS 能力的层；MCP 工具调用被翻译为窄的主进程回调 |
 | ③ 沙箱 preload | 只暴露规范化事件（state / level）与窄设置 API | 不暴露文件系统、任意 IPC、原始音频 |
-| ④ Renderer（Live2D） | 渲染 Cubism 模型；电平驱动口型；idle/listening/speaking 状态行为；执行表情/动作/参数命令 | 无任何特权；嘴参映射 `ParamMouthOpenY`（或等效） |
+| ④ Renderer（Live2D） | 渲染 Cubism 模型；电平驱动伪 viseme 口型；idle/listening/speaking 状态行为；执行表情/动作/参数命令 | 无任何特权；嘴参映射 `ParamMouthOpenY` + `ParamMouthForm`（或等效；form 缺失时仅开合） |
 
 ### 与 persona 的映射
 
@@ -78,7 +78,7 @@ Electron main (:47832 loopback)
 | Native listener（进程输出 → level） | `native/` + `electron/audio-listener.*` | 契约一致；macOS 优先（Core Audio process tap），linux/win 预留 |
 | Electron main（lifecycle + bridge + MCP + settings） | `electron/main.*` + `bridge-server.*` + `mcp-server.*` + `settings-store.*` | 职责一致；bridge 默认端口 **47832**（避开 persona 47831） |
 | 沙箱 preload（规范化事件窄桥） | `electron/preload.cjs` | 思路一致 |
-| React + Three.js / VRM 渲染 | **pixi.js + pixi-live2d-display（Live2D Cubism 4）** | **核心差异**：不引入 VRM/Three 角色管线；口型映射到 `ParamMouthOpenY` |
+| React + Three.js / VRM 渲染 | **pixi.js + pixi-live2d-display（Live2D Cubism 4）** | **核心差异**：不引入 VRM/Three；口型将 persona 五元音折叠为 `ParamMouthOpenY` + `ParamMouthForm`（伪 viseme，非真音素） |
 | MCP 工具面（window/status/animation） | status/window/model-info/expression/motion（+ 可选 look_at/parameter/reset） | 工具名按 Live2D 语义设计，server 名使用 live2d 系 |
 
 ---
@@ -168,8 +168,9 @@ macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio
 
 ### 4.2 渲染侧行为
 
-- **嘴型**：每个动画帧按当前 `level` 与 `activity === speaking` 平滑驱动嘴参（思想对齐 persona `useAmplitudeLipSync`，映射到 Live2D `ParamMouthOpenY`）。
+- **嘴型**：每个动画帧按当前 `level` 与 `activity === speaking` 平滑驱动（思想对齐 persona `useAmplitudeLipSync`）：强度经 attack/release 平滑后，伪 viseme 相位 + 邻接衰减 + flutter + **peakCap 0.62** 写入 `ParamMouthOpenY`（开合）与 `ParamMouthForm`（嘴形；参数表未枚举时若已有开合参则回退写标准 id）。无真音素时间轴。
 - **状态**：`idle` / `listening` / `speaking`；短静音（默认 **900ms**，可配置常量）内保持 speaking，避免句间抖动切回 idle。
+- **体态**：Hiyori 无 Speaking 组 → speaking 用 Idle index 1 priority 2，listening/idle 用 Idle index 0 priority 1。
 - **优先级**：MCP 触发的 `play_motion` / `set_expression` 可临时优先于 voice 驱动的身体动作；口型 level 驱动不被打断。
 
 ### 4.3 Voice 事件通道（F3 落地）
@@ -179,7 +180,7 @@ macOS helper 源码为 `native/macos/Live2dAudioListener.mm`，只在 Core Audio
 | 权威规范化 | `electron/voice-events.cjs` | `normalizeVoiceEvent`：白名单字段、level clamp `[0,1]`、phase/activity 枚举校验；非法负载丢弃（NFR-3，有单测） |
 | main → renderer | IPC `live2d:voice` | `sendVoiceEvent(win, raw)`（`electron/main.cjs`）；F4 bridge `/events` 的 onEvent 即调用此函数（§3） |
 | preload 窄 API | `electron/preload.cjs` | `window.live2d.onVoiceEvent(cb)`（浅校验 type 白名单后转发，返回取消订阅）；不暴露任意 IPC |
-| renderer 消费 | `renderer/src/main.ts` → `lip-sync.ts` → `voice-state.ts` | 状态机 + 平滑 + 嘴参解析（`ParamMouthOpenY` 或别名，缺模型/缺参 no-op）；PIXI ticker LOW 优先级写入（motion 之后、当帧渲染生效） |
+| renderer 消费 | `renderer/src/main.ts` → `lip-sync.ts` → `voice-state.ts` | 状态机 + 平滑 + 伪 viseme（`PseudoVisemeMapper`）+ 嘴参解析（开合/嘴形别名，缺参 no-op）；PIXI ticker LOW 优先级写入（motion 之后、当帧渲染生效） |
 
 **测试注入（仅开发/测试）**：以 `LIVE2D_VOICE_INJECT=1`（或 CLI `--live2d-voice-inject`）启动 main 时，preload 经 `additionalArguments` 检测标志后额外暴露 `window.live2d.injectVoice(payload)`；该调用经 IPC `live2d:voice-inject` 回到 main，**过同一 `normalizeVoiceEvent`** 后再经 `live2d:voice` 送回 renderer——注入与真实推送走完全相同的 renderer 路径。未开标志时 `injectVoice` 不存在（生产无注入面）。调试快照 `window.__live2dVoiceDebug.snapshot()`（activity / smoothedMouth / mouthWrites / events 等）供脚本断言，证据脚本：`scripts/f3-lipsync-proof.mjs`（`bun run proof:f3`，`--e2e` 走 CDP 端到端）。
 
@@ -198,7 +199,7 @@ MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路�
 
 ### 4.5 托盘与设置生命周期（F7 落地）
 
-- `electron/tray.cjs` 用内置 PNG 创建托盘（macOS 使用 template image），菜单动作固定为显示角色窗、隐藏角色窗、重置窗口位置、打开设置、退出；不依赖 persona 或模型资源。
+- `electron/tray.cjs` 使用 `assets/tray` 下平面黑白 pictogram 小人动画帧创建托盘：darwin 标记 macOS template image 以适配菜单栏深色/浅色；运行时 PNG 帧 `setImage` 做简约动画，并在六种姿势（躺平、站立打招呼、蹲下思考、无聊发呆、追蝴蝶、从边缘伸头查看）间随机切换；GIF/WebM 为同目录交付预览资源。菜单动作固定为显示角色窗、隐藏角色窗、重置窗口位置、打开设置、退出；不依赖 persona 或模型资源。
 - 「把角色窗露出来」只有一处实现：`electron/main.cjs` 的 `showAvatarWindow()`（必要时建窗 → 最小化则 `restore()` → `show()` → `focus()`）。托盘显示/托盘点击、macOS dock `activate`、第二实例唤起、MCP `control_window show|toggle` 全部走它；`windowAction()` 退化为 MCP 适配层，只负责把 show/hide/toggle 翻译成显示或隐藏并返回操作后的可见性。
 - 有可用托盘时，角色窗 `close` 转为 `hide`，`window-all-closed` 不退出；托盘“退出”设置 quitting 状态后走 Electron 正常退出清理 bridge、MCP handler 与 listener。
 - `electron/settings-store.cjs` 将 `{ version, voiceSource, window: { x, y, width, height, scale } }` 保存到 Electron `userData/settings.json`。候选值先经过 `sanitizeVoiceSource` 与窗口状态范围校验，再以同目录临时文件 + rename 原子发布；非法输入不会破坏上一份配置。
