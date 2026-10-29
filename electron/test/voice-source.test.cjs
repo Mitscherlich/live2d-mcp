@@ -19,8 +19,6 @@ const {
   isValidVoiceSourceId,
   normalizeVoiceSource,
   processIdentity,
-  processMatchesSource,
-  processSourceId,
   resolveVoiceSourceConfig,
   resolveVoiceSourceFromEnv,
   resolveVoiceSourcePattern,
@@ -243,19 +241,9 @@ test('resolveVoiceSourceConfig：环境 mode 明确覆盖持久化配置', () =>
   assert.equal(cfg.environmentOverridesVoice, true)
 })
 
-test('processSourceId / processMatchesSource：application 匹配语义（darwin）', () => {
-  const proc = { pid: 100, name: 'ChatGPT', executable: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' }
-  const id = processSourceId('darwin', proc)
-  assert.equal(id?.startsWith('process:darwin:'), true)
-  assert.equal(processMatchesSource(proc, 'darwin', id), true)
-  assert.equal(processMatchesSource({ ...proc, executable: '/other/path' }, 'darwin', id), false)
-  // 非 darwin/win32 平台不产 source id（linux 预留）
-  assert.equal(processSourceId('linux', proc), null)
-})
-
 test('voiceSourceIdentity：解码一次得目标 identity，供逐进程直接比较', () => {
   const proc = { pid: 100, name: 'ChatGPT', executable: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' }
-  const id = processSourceId('darwin', proc)
+  const id = `process:darwin:${encodeIdentity(proc.executable)}`
   // 批量匹配路径（process-discovery selectVoiceProcessTree）的等价性：
   // 解一次 source_id 后比 identity ≡ 逐进程编码后比 source_id
   assert.equal(voiceSourceIdentity(id, 'darwin'), proc.executable)
@@ -265,5 +253,4 @@ test('voiceSourceIdentity：解码一次得目标 identity，供逐进程直接�
   assert.equal(voiceSourceIdentity('process:linux:abc', 'linux'), null)
   assert.equal(voiceSourceIdentity('not-a-source-id', 'darwin'), null)
   assert.equal(voiceSourceIdentity(null, 'darwin'), null)
-  assert.equal(processMatchesSource(proc, 'darwin', 'not-a-source-id'), false)
 })

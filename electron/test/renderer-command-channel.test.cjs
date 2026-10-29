@@ -21,7 +21,7 @@ const {
   ERROR_NO_WINDOW,
   ERROR_TIMEOUT,
   ERROR_WINDOW_CLOSED,
-  createRendererCommandChannel,
+  RendererCommandChannel,
 } = require('../renderer-command-channel.cjs')
 
 /** 最小 ipcMain：记录 handler，供测试直接触发 */
@@ -66,7 +66,7 @@ function setup({ timeoutMs = 50, logger } = {}) {
   const ipcMain = createFakeIpcMain()
   const win = createFakeWindow()
   const warnings = []
-  const channel = createRendererCommandChannel({
+  const channel = new RendererCommandChannel({
     ipcMain,
     getWindow: () => win,
     timeoutMs,
@@ -84,9 +84,9 @@ function lastCommand(win) {
 }
 
 test('构造参数缺失时立即抛错（ipcMain / getWindow 必填）', () => {
-  assert.throws(() => createRendererCommandChannel({ getWindow: () => null }), /ipcMain 必填/)
+  assert.throws(() => new RendererCommandChannel({ getWindow: () => null }), /ipcMain 必填/)
   assert.throws(
-    () => createRendererCommandChannel({ ipcMain: createFakeIpcMain() }),
+    () => new RendererCommandChannel({ ipcMain: createFakeIpcMain() }),
     /getWindow 必填/,
   )
 })
@@ -105,7 +105,7 @@ test('ready 之前发送立即失败，不占用挂起表也不触碰 webContent
 test('窗口不存在或已销毁时发送立即失败', async () => {
   const ipcMain = createFakeIpcMain()
   let win = null
-  const channel = createRendererCommandChannel({ ipcMain, getWindow: () => win })
+  const channel = new RendererCommandChannel({ ipcMain, getWindow: () => win })
 
   assert.deepEqual(await channel.send('reset', {}), { ok: false, error: ERROR_NO_WINDOW })
 
@@ -247,7 +247,7 @@ test('非目标 sender 的 ready / result 帧一律忽略', async () => {
 test('窗口已销毁时到达的结果帧被忽略（sender 校验依赖活窗口）', async () => {
   const ipcMain = createFakeIpcMain()
   const win = createFakeWindow()
-  const channel = createRendererCommandChannel({
+  const channel = new RendererCommandChannel({
     ipcMain,
     getWindow: () => win,
     timeoutMs: 10,

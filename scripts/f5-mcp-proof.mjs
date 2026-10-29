@@ -44,7 +44,7 @@ const { createBridgeServer } = require('../electron/bridge-server.cjs')
 const { MCP_PATH } = require('../electron/mcp-protocol.cjs')
 const {
   SERVER_INSTRUCTIONS,
-  createLive2dMcpHandler,
+  McpSessionManager,
 } = require('../electron/mcp-server.cjs')
 
 /**
@@ -101,7 +101,7 @@ async function runHttp() {
     onParameter: async () => ({ ok: true }),
     onReset: async () => ({ ok: true }),
   }
-  const mcpHandler = createLive2dMcpHandler(controller)
+  const mcpHandler = new McpSessionManager(controller)
   const bridge = createBridgeServer({
     port: 0,
     onEvent: () => true,
@@ -115,7 +115,7 @@ async function runHttp() {
         url: `http://127.0.0.1:${bridge.address()?.port ?? 0}${MCP_PATH}`,
       },
     }),
-    mcpHandler,
+    mcpHandler: (request, response, body) => mcpHandler.handle(request, response, body),
   })
   const address = await bridge.listen()
   const base = `http://127.0.0.1:${address.port}`

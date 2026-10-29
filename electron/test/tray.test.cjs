@@ -3,8 +3,8 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
+  TrayController,
   buildTrayMenuTemplate,
-  createTrayController,
   shouldQuitAfterAllWindowsClosed,
 } = require('../tray.cjs')
 
@@ -36,7 +36,7 @@ test('有可用托盘时 window-all-closed 保活；无托盘时退出', () => {
   assert.equal(shouldQuitAfterAllWindowsClosed({ isDestroyed: () => true }), true)
 })
 
-test('托盘控制器使用内置图标并在 macOS 标记为模板图', () => {
+test('托盘控制器使用内置图标并在 macOS 标记为模板图；持有销毁语义', () => {
   const events = new Map()
   const image = {
     resize(options) {
@@ -47,19 +47,24 @@ test('托盘控制器使用内置图标并在 macOS 标记为模板图', () => {
       this.template = value
     },
   }
+  let rawTray = null
   class FakeTray {
     constructor(icon) {
       assert.equal(icon, image)
+      this.destroyed = false
+      rawTray = this
     }
     setToolTip(value) { this.tooltip = value }
     setContextMenu(value) { this.menu = value }
     on(name, callback) { events.set(name, callback) }
+    isDestroyed() { return this.destroyed }
+    destroy() { this.destroyed = true }
   }
   const menu = { marker: true }
   const actions = {
     showAvatar() {}, hideAvatar() {}, resetAvatar() {}, openSettings() {}, quitApp() {},
   }
-  const tray = createTrayController({
+  const controller = new TrayController({
     Tray: FakeTray,
     Menu: { buildFromTemplate: (template) => ({ ...menu, template }) },
     nativeImage: {
@@ -73,7 +78,13 @@ test('托盘控制器使用内置图标并在 macOS 标记为模板图', () => {
   })
 
   assert.equal(image.template, true)
-  assert.equal(tray.tooltip, 'Live2D Companion')
-  assert.deepEqual(tray.menu.marker, true)
+  assert.equal(rawTray.tooltip, 'Live2D Companion')
+  assert.deepEqual(rawTray.menu.marker, true)
   assert.equal(events.has('click'), true)
+
+  assert.equal(controller.isDestroyed(), false)
+  assert.equal(shouldQuitAfterAllWindowsClosed(controller), false)
+  controller.destroy()
+  assert.equal(controller.isDestroyed(), true)
+  assert.equal(shouldQuitAfterAllWindowsClosed(controller), true)
 })

@@ -13,7 +13,7 @@ const {
   SET_SCALE_EVENT_CHANNEL,
   SET_MOUSE_IGNORE_CHANNEL,
   SET_WINDOW_SCALE_CHANNEL,
-  createWindowInteractionController,
+  WindowInteractionController,
 } = require('../window-interactions.cjs')
 
 function createFakeIpcMain() {
@@ -81,7 +81,7 @@ function setup({ onWindowStateChange = () => {} } = {}) {
       return { workArea: { x: 0, y: 0, width: 1000, height: 800 } }
     },
   }
-  const controller = createWindowInteractionController({
+  const controller = new WindowInteractionController({
     ipcMain,
     screen,
     getWindow: () => win,

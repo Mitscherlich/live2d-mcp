@@ -31,7 +31,7 @@ Agent (Codex/Claude/…)
 mcp-server
     │  WebSocket (:8765)
     ▼
-renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
+renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js v8 + untitled-pixi-live2d-engine)
 ```
 
 能力特点：
@@ -132,7 +132,7 @@ renderer (Vite 浏览器 :5173)  ← Live2D (pixi.js + pixi-live2d-display)
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Renderer（Live2D）                                         │
-│  · pixi.js + pixi-live2d-display                            │
+│  · pixi.js v8 + untitled-pixi-live2d-engine                 │
 │  · expression / motion / parameter / look_at                │
 │  · amplitude lip-sync → ParamMouthOpenY（或等效嘴参）         │
 │  · idle / listening / speaking 状态行为                     │

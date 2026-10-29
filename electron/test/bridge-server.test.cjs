@@ -5,13 +5,12 @@ const assert = require('node:assert/strict')
 const http = require('node:http')
 
 const {
-  DEFAULT_PORT,
   MAX_BODY_BYTES,
   createBridgeServer,
   hostAllowed,
   originAllowed,
-  resolveBridgePort,
 } = require('../bridge-server.cjs')
+const { DEFAULT_PORT, resolveBridgePort } = require('../bridge-endpoint.cjs')
 const { normalizeVoiceEvent } = require('../voice-events.cjs')
 const { noopMcpHandler, postJson, startBridge } = require('./helpers/bridge.cjs')
 

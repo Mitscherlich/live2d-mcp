@@ -37,6 +37,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 const { discoverVoiceProcesses } = require('./process-discovery.cjs')
+const { clamp01Lenient } = require('./protocol-utils.cjs')
 const { normalizeVoiceSource } = require('./voice-source.cjs')
 
 const SESSION_IDLE_MS = 8_000
@@ -370,7 +371,7 @@ class NativeProcessAudioListener {
     }
     if (message.type !== 'level' || !Number.isFinite(message.level)) return
 
-    const level = Math.max(0, Math.min(1, Number(message.level)))
+    const level = clamp01Lenient(message.level)
     if (level > SESSION_AUDIBLE_LEVEL) {
       clearTimeout(this.sessionTimer)
       this.sessionTimer = setTimeout(() => this.endSession(), this.sessionIdleMs)

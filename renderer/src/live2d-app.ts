@@ -1,22 +1,25 @@
 /**
- * Live2D 应用核心 - 基于 pixi-live2d-display
+ * Live2D 应用核心 - 基于 untitled-pixi-live2d-engine（PixiJS v8 + Cubism 5 Framework）
  *
- * 需要 Live2D Cubism Core 已通过 <script> 标签加载。
- * Electron CSP 禁用 unsafe-eval：用 @pixi/unsafe-eval 的 install 补丁，
- * 避免 PIXI ShaderSystem 走 new Function。
+ * 需要 Live2D Cubism Core（Cubism 5 SDK for Web 附带版本）已通过 <script> 标签加载。
+ * Electron CSP 禁用 unsafe-eval：引入 pixi.js/unsafe-eval，
+ * 避免 PIXI v8 的 shader/uniform 同步走 new Function。
  */
 
+import 'pixi.js/unsafe-eval'
 import * as PIXI from 'pixi.js'
-import { install as installPixiUnsafeEval } from '@pixi/unsafe-eval'
-import { Live2DModel } from 'pixi-live2d-display/cubism4'
+import { Live2DModel, Live2DPlugin, type CubismInternalModel } from 'untitled-pixi-live2d-engine/cubism'
+import { showModelLoadError } from './boot-error.js'
 
-// 必须在创建 PIXI.Application 之前 install
-installPixiUnsafeEval(PIXI)
-
-// pixi-live2d-display 需要访问全局 PIXI，并用同一 Ticker 驱动 autoUpdate
-;(window as unknown as Record<string, unknown>).PIXI = PIXI
+// 模块加载期副作用（main.ts 动态 import 本模块时执行一次）：
+// Cubism Core 缺失时引擎在 import 期抛错（"Could not find Cubism runtime"），
+// main.ts 捕获后落入缺模引导（FR-D3）。
+// Live2D render pipe 必须在创建 PIXI.Application 之前注册。
+PIXI.extensions.add(Live2DPlugin)
 // 注册 Application 使用的 Ticker 类，避免 shared/app ticker 不一致导致模型不刷新
 Live2DModel.registerTicker(PIXI.Ticker)
+
+type CubismLive2DModel = Live2DModel<CubismInternalModel>
 
 export interface ModelInfo {
   expressions: string[]
@@ -36,11 +39,15 @@ const MODEL_PATH = '/model/HiyoriPro/hiyori_pro_t11.model3.json'
 
 export class Live2DApp {
   private app: PIXI.Application | null = null
-  private model: Live2DModel | null = null
+  private model: CubismLive2DModel | null = null
   private modelInfo: ModelInfo | null = null
   private hitAreaGraphics: PIXI.Graphics | null = null
   /** hitArea id → drawable 下标：overlay 开启时建一次，关闭时丢弃（每帧全量查 ids 太贵） */
   private hitAreaDrawables: Map<string, number> | null = null
+  /** 参数 id → 下标：Cubism 5 Framework 的 *ById 需 CubismIdHandle，按下标写更直接 */
+  private parameterIndices = new Map<string, number>()
+  /** overlay 每帧复用的 bounds 对象 */
+  private readonly overlayBounds = { x: 0, y: 0, width: 0, height: 0 }
   /** overlay 每帧复用的点，避免每区域 new PIXI.Point ×4 */
   private readonly overlayIn = new PIXI.Point()
   private readonly overlayOut = [
@@ -53,8 +60,11 @@ export class Live2DApp {
   async init(canvas: HTMLCanvasElement): Promise<void> {
     // Electron 透明窗 + WebGL：需要 alpha 通道与 premultipliedAlpha，
     // 并保留 drawing buffer 便于诊断；backgroundAlpha=0 适配透明窗体。
-    this.app = new PIXI.Application({
-      view: canvas,
+    this.app = new PIXI.Application()
+    await this.app.init({
+      canvas,
+      // Live2D render pipe 仅实现了 WebGL
+      preference: 'webgl',
       width: 600,
       height: 600,
       backgroundAlpha: 0,
@@ -77,9 +87,16 @@ export class Live2DApp {
     if (!this.app) throw new Error('App not initialized')
 
     try {
-      this.model = await Live2DModel.from(MODEL_PATH, {
-        autoInteract: false,  // 关闭自动鼠标交互，由 MCP 控制
-      })
+      // 先按页面地址解析成绝对 URL：根相对路径交给 PIXI v8 Assets 补全时，
+      // 自定义 scheme（prod 的 live2d-app://root/）会丢 host，贴图请求变成 live2d-app://model/...
+      const modelUrl = new URL(MODEL_PATH, window.location.href).href
+      this.model = (await Live2DModel.from(modelUrl, {
+        // 关闭自动鼠标交互（命中检测 / 视线跟随），由 MCP 控制
+        autoHitTest: false,
+        autoFocus: false,
+        // 由 app.ticker 显式驱动模型更新（与渲染同一条 ticker，避免空白画布）
+        autoUpdate: false,
+      })) as CubismLive2DModel
 
       // 等待至少一帧，确保 mesh/bounds 就绪（部分 Core/显卡组合首次 width/height 为 0）
       await new Promise<void>((resolve) => {
@@ -101,11 +118,8 @@ export class Live2DApp {
         Math.min(this.app.screen.width / modelW, this.app.screen.height / modelH) * 0.9
       this.model.scale.set(scale)
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.app.stage.addChild(this.model as any)
+      this.app.stage.addChild(this.model)
 
-      // 强制用 app.ticker 驱动模型更新（与渲染同一条 ticker，避免空白画布）
-      this.model.autoUpdate = false
       this.app.ticker.add(() => {
         if (!this.model) return
         try {
@@ -121,7 +135,7 @@ export class Live2DApp {
 
       // 播放默认 Idle，避免 T 姿势/静止不可见
       try {
-        this.model.motion('Idle')
+        void this.model.motion('Idle').catch(() => {})
       } catch {
         /* Idle 不存在时忽略 */
       }
@@ -142,14 +156,7 @@ export class Live2DApp {
       console.log('[Live2D] Model info:', this.modelInfo)
     } catch (e) {
       console.error('[Live2D] Failed to load model:', e)
-      const panel = document.getElementById('model-load-error')
-      if (panel) {
-        panel.style.display = 'block'
-        const detail = panel.querySelector('[data-error-detail]')
-        if (detail) {
-          detail.textContent = e instanceof Error ? e.message : String(e)
-        }
-      }
+      showModelLoadError(e)
       throw e
     }
   }
@@ -157,10 +164,10 @@ export class Live2DApp {
   private extractModelInfo(): ModelInfo {
     if (!this.model) return { expressions: [], motionGroups: {}, parameters: [] }
 
-    const internalModel = (this.model as unknown as { internalModel: { settings: { json: Record<string, unknown> } } }).internalModel
-    const settings = internalModel?.settings?.json ?? {}
+    const internalModel = this.model.internalModel
+    const settings = internalModel.settings.json as Record<string, unknown>
 
-    // Cubism 4 model3.json 将资源路径放在 FileReferences 下
+    // model3.json 将资源路径放在 FileReferences 下
     const fileRefs = (settings['FileReferences'] as Record<string, unknown> | undefined) ?? settings
 
     // 提取表情列表
@@ -174,59 +181,25 @@ export class Live2DApp {
       motionGroups[group] = Array.isArray(motions) ? motions.length : 0
     }
 
-    // 提取参数列表：优先 Core parameters 表；否则从 model3 Groups / lipSyncIds 兜底
-    // （Cubism Core + Framework 组合下 coreModel.parameters 可能不可枚举）
+    // 提取参数列表：Core 模型的 parameters 表（Cubism 5 Framework 经 getModel() 暴露）；
+    // 同时建 id → 下标索引供 setParameter 使用
     const parameters: ParameterInfo[] = []
-    const seen = new Set<string>()
-    const pushParam = (id: string, min = 0, max = 1, defaultValue = 0) => {
-      if (!id || seen.has(id)) return
-      seen.add(id)
-      parameters.push({ id, name: id, min, max, defaultValue })
-    }
+    this.parameterIndices.clear()
     try {
-      const coreModel = (
-        internalModel as unknown as {
-          coreModel?: {
-            parameters?: {
-              count: number
-              ids: ArrayLike<string>
-              minimumValues: ArrayLike<number>
-              maximumValues: ArrayLike<number>
-              defaultValues: ArrayLike<number>
-            }
-          }
-        }
-      ).coreModel
-      const params = coreModel?.parameters
-      if (params && params.count > 0 && params.ids) {
-        for (let i = 0; i < params.count; i++) {
-          pushParam(
-            String(params.ids[i]),
-            Number(params.minimumValues?.[i] ?? 0),
-            Number(params.maximumValues?.[i] ?? 1),
-            Number(params.defaultValues?.[i] ?? 0),
-          )
-        }
+      const params = internalModel.coreModel.getModel().parameters
+      for (let i = 0; i < params.count; i++) {
+        const id = String(params.ids[i])
+        this.parameterIndices.set(id, i)
+        parameters.push({
+          id,
+          name: id,
+          min: params.minimumValues[i],
+          max: params.maximumValues[i],
+          defaultValue: params.defaultValues[i],
+        })
       }
     } catch (e) {
       console.warn('[Live2D] Could not extract parameters from coreModel:', e)
-    }
-    // Groups（LipSync / EyeBlink 等）
-    const groups =
-      (settings['Groups'] as Array<{ Name?: string; Ids?: string[] }> | undefined) ?? []
-    for (const g of groups) {
-      for (const id of g.Ids ?? []) pushParam(id)
-    }
-    // Framework lipSync / eyeBlink id 列表
-    try {
-      const im = internalModel as unknown as {
-        getLipSyncIds?: () => string[]
-        getEyeBlinkIds?: () => string[]
-      }
-      for (const id of im.getLipSyncIds?.() ?? []) pushParam(id)
-      for (const id of im.getEyeBlinkIds?.() ?? []) pushParam(id)
-    } catch {
-      /* ignore */
     }
 
     return { expressions, motionGroups, parameters }
@@ -269,7 +242,7 @@ export class Live2DApp {
   lookAt(x: number, y: number): boolean {
     if (!this.model) return false
     try {
-      // pixi-live2d-display 通过 focus 方法控制眼神
+      // 引擎通过 focus 方法控制眼神（stage 全局坐标）
       this.model.focus(
         this.app!.screen.width / 2 + x * this.app!.screen.width / 2,
         this.app!.screen.height / 2 - y * this.app!.screen.height / 2
@@ -284,9 +257,10 @@ export class Live2DApp {
   // 设置参数
   setParameter(paramId: string, value: number): boolean {
     if (!this.model) return false
+    const index = this.parameterIndices.get(paramId)
+    if (index === undefined) return false
     try {
-      const internalModel = (this.model as unknown as { internalModel: { coreModel: { setParameterValueById: (id: string, value: number) => void } } }).internalModel
-      internalModel?.coreModel?.setParameterValueById(paramId, value)
+      this.model.internalModel.coreModel.setParameterValueByIndex(index, value)
       return true
     } catch (e) {
       console.error('[Live2D] setParameter failed:', e)
@@ -337,8 +311,7 @@ export class Live2DApp {
     if (!show) {
       if (this.hitAreaGraphics) {
         this.app.ticker.remove(this.drawHitAreaOverlay, this)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.app.stage.removeChild(this.hitAreaGraphics as any)
+        this.app.stage.removeChild(this.hitAreaGraphics)
         this.hitAreaGraphics.destroy()
         this.hitAreaGraphics = null
       }
@@ -348,43 +321,15 @@ export class Live2DApp {
     if (this.hitAreaGraphics) return
     this.hitAreaDrawables = this.buildHitAreaDrawables()
     this.hitAreaGraphics = new PIXI.Graphics()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.app.stage.addChild(this.hitAreaGraphics as any)
+    this.app.stage.addChild(this.hitAreaGraphics)
     this.app.ticker.add(this.drawHitAreaOverlay, this)
   }
 
-  /**
-   * hitArea id → drawable 下标，overlay 开启时解析一次。
-   * drawables.ids 有数百项，每帧 Array.from + indexOf 是纯浪费（模型加载后不变）。
-   */
+  /** hitArea id → drawable 下标：引擎加载时已解析（internalModel.hitAreas），此处只取快照 */
   private buildHitAreaDrawables(): Map<string, number> {
     const map = new Map<string, number>()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const internalModel = (this.model as any)?.internalModel
-    const hitAreas: Array<{ Id?: string; id?: string }> = internalModel?.settings?.hitAreas ?? []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const coreModel = internalModel?.coreModel as any
-    let ids: string[] | null = null
-    try {
-      // 方式 A: drawables 属性数组（pixi-live2d-display 封装）
-      if (coreModel?.drawables?.ids) ids = Array.from(coreModel.drawables.ids as ArrayLike<string>)
-    } catch {
-      ids = null
-    }
-
-    for (const area of hitAreas) {
-      const areaId = area.Id ?? area.id ?? ''
-      if (!areaId) continue
-      let idx = ids ? ids.indexOf(areaId) : -1
-      // 方式 B: getDrawableIndex（直接 Cubism SDK API）
-      if (idx < 0 && typeof coreModel?.getDrawableIndex === 'function') {
-        try {
-          idx = coreModel.getDrawableIndex(areaId)
-        } catch {
-          idx = -1
-        }
-      }
-      if (idx >= 0) map.set(areaId, idx)
+    for (const area of Object.values(this.model?.internalModel.hitAreas ?? {})) {
+      if (area.index >= 0) map.set(area.id, area.index)
     }
     if (map.size === 0) console.warn('[Live2D] HitArea overlay：未解析到任何可绘制区域')
     return map
@@ -395,62 +340,36 @@ export class Live2DApp {
     if (!g || !this.model || !this.hitAreaDrawables) return
     g.clear()
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const internalModel = (this.model as any).internalModel
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const coreModel = internalModel?.coreModel as any
-
-    // getDrawableVertexPositions 返回 Cubism NDC 坐标（原点在模型中心，Y 轴向上，范围 [-1,1]）
-    // worldTransform.apply 期望纹理空间坐标（原点左上角，Y 轴向下，[0, originalWidth] × [0, originalHeight]）
-    // 需要先做坐标系转换：texX = (cx + 1) * halfW，texY = (1 - cy) * halfH
-    const halfW: number = (internalModel?.originalWidth ?? 0) / 2
-    const halfH: number = (internalModel?.originalHeight ?? 0) / 2
-    if (halfW === 0 || halfH === 0) return
-
-    const wt = (this.model as unknown as { worldTransform: PIXI.Matrix }).worldTransform
-    const [tl, tr, br, bl] = this.overlayOut
+    // getDrawableBounds 返回模型画布坐标（原点左上角，Y 轴向下，[0, originalWidth] × [0, originalHeight]）；
+    // 画布坐标 → stage 坐标：先 internalModel.localTransform，再 model.worldTransform
+    // （即 toModelPosition 的逆变换）
+    const internalModel = this.model.internalModel
+    const lt = internalModel.localTransform
+    const wt = this.model.worldTransform
+    const b = this.overlayBounds
+    const corners = this.overlayOut
 
     for (const idx of this.hitAreaDrawables.values()) {
-      let vertices: Float32Array | undefined
       try {
-        vertices =
-          coreModel?.drawables?.vertexPositions?.[idx] ??
-          coreModel?.getDrawableVertexPositions?.(idx)
+        // d.ts 把参数类型解析成了 PIXI.Bounds；运行时只写 x/y/width/height
+        internalModel.getDrawableBounds(idx, b as unknown as PIXI.Bounds)
       } catch {
         continue
       }
 
-      if (!vertices || vertices.length < 4) continue
-
-      // Cubism NDC → 纹理空间坐标，计算 AABB
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (let i = 0; i < vertices.length; i += 2) {
-        const tx = (vertices[i] + 1) * halfW          // cx → texX
-        const ty = (1 - vertices[i + 1]) * halfH      // cy → texY（Y 轴翻转）
-        if (tx < minX) minX = tx
-        if (tx > maxX) maxX = tx
-        if (ty < minY) minY = ty
-        if (ty > maxY) maxY = ty
+      // 点实例复用，零分配
+      corners[0].set(b.x, b.y)
+      corners[1].set(b.x + b.width, b.y)
+      corners[2].set(b.x + b.width, b.y + b.height)
+      corners[3].set(b.x, b.y + b.height)
+      for (const p of corners) {
+        lt.apply(p, this.overlayIn)
+        wt.apply(this.overlayIn, p)
       }
 
-      // 纹理空间坐标 → canvas 坐标（通过 worldTransform；点实例复用，零分配）
-      this.overlayIn.set(minX, minY)
-      wt.apply(this.overlayIn, tl)
-      this.overlayIn.set(maxX, minY)
-      wt.apply(this.overlayIn, tr)
-      this.overlayIn.set(maxX, maxY)
-      wt.apply(this.overlayIn, br)
-      this.overlayIn.set(minX, maxY)
-      wt.apply(this.overlayIn, bl)
-
-      g.lineStyle(1.5, 0x64b4ff, 0.85)
-      g.beginFill(0x64b4ff, 0.07)
-      g.moveTo(tl.x, tl.y)
-      g.lineTo(tr.x, tr.y)
-      g.lineTo(br.x, br.y)
-      g.lineTo(bl.x, bl.y)
-      g.closePath()
-      g.endFill()
+      g.poly(corners.flatMap((p) => [p.x, p.y]))
+        .fill({ color: 0x64b4ff, alpha: 0.07 })
+        .stroke({ width: 1.5, color: 0x64b4ff, alpha: 0.85 })
     }
   }
 
@@ -458,8 +377,8 @@ export class Live2DApp {
   hitTest(x: number, y: number): string[] {
     if (!this.model) return []
     try {
-      // pixi-live2d-display 接受 canvas 全局坐标
-      return (this.model as unknown as { hitTest: (x: number, y: number) => string[] }).hitTest(x, y)
+      // 引擎接受 stage 全局坐标，返回命中的 HitArea 名称
+      return this.model.hitTest(x, y)
     } catch {
       return []
     }

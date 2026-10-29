@@ -31,7 +31,7 @@ const {
   SERVER_INSTRUCTIONS,
   SERVER_NAME,
   SESSION_IDLE_TIMEOUT_MS,
-  createLive2dMcpHandler,
+  McpSessionManager,
 } = require('../mcp-server.cjs')
 const { resultJson, startBridge } = require('./helpers/bridge.cjs')
 
@@ -114,13 +114,15 @@ function makeController({ modelLoaded = true } = {}) {
 
 /**
  * 起 bridge + 真 mcpHandler + 官方 client；返回 { client, controller, mcpHandler, baseUrl, close }
- * @param {object} [opts] modelLoaded 透传给 stub controller；now 为注入 handler 的假时钟
+ * @param {object} [opts] modelLoaded 透传给 stub controller；now 为注入 session 管理的假时钟
  */
 async function startMcp(opts = {}) {
   const { now, ...controllerOpts } = opts
   const controller = makeController(controllerOpts)
-  const mcpHandler = createLive2dMcpHandler(controller, now ? { now } : undefined)
-  const { baseUrl, close: closeBridge } = await startBridge({ mcpHandler })
+  const mcpHandler = new McpSessionManager(controller, now ? { now } : undefined)
+  const { baseUrl, close: closeBridge } = await startBridge({
+    mcpHandler: (request, response, body) => mcpHandler.handle(request, response, body),
+  })
   const client = new Client({ name: 'mcp-test', version: '0.0.1' })
   await client.connect(new StreamableHTTPClientTransport(new URL(`${baseUrl}${MCP_PATH}`)))
   return {
