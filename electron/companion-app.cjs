@@ -405,7 +405,7 @@ class CompanionApp {
     win.on('closed', () => {
       if (this._settingsWindow === win) this._settingsWindow = null
     })
-    void win.loadFile(path.join(__dirname, 'settings.html'))
+    void win.loadFile(path.join(__dirname, 'settings', 'settings.html'))
     return win
   }
 

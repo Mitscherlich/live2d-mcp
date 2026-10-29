@@ -40,21 +40,22 @@ Electron main (:47832 loopback)
                 │ MCP /mcp                    │ POST /events
                 ▼                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Electron Main                                              │
-│  · window / tray / settings lifecycle                       │
-│  · bridge-server (loopback HTTP)                            │
-│  · mcp-server (Streamable HTTP)                             │
-│  · audio listener (macOS process tap；external 可空)        │
-│  · settings-store (voice source 等)                         │
+│  Electron Main（CompanionApp 组合根）                        │
+│  · 窗口 / TrayController / 设置窗生命周期                    │
+│  · BridgeService：bridge-server (loopback HTTP)             │
+│    + McpSessionManager (Streamable HTTP)                    │
+│  · VoiceListenerManager（macOS 进程输出 tap；external 可空） │
+│  · SettingsStore（voice source / 窗口状态）                  │
 └───────────────┬─────────────────────────────────────────────┘
                 │ 沙箱 preload（规范化事件 + 窄 API）
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Renderer（Live2D）                                         │
-│  · pixi.js v8 + untitled-pixi-live2d-engine                 │
-│  · expression / motion / parameter / look_at                │
-│  · amplitude lip-sync → ParamMouthOpenY（或等效嘴参）         │
-│  · idle / listening / speaking 状态行为                     │
+│  · pixi.js v8 + untitled-pixi-live2d-engine（Live2DApp）     │
+│  · VoiceController：amplitude lip-sync → ParamMouthOpenY     │
+│    （或等效嘴参）+ idle/listening/speaking 体态              │
+│  · CommandDispatcher：表情/动作/参数/视线命令执行            │
+│  · MouseFollow / WindowControls / ClickInteraction          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -236,19 +237,34 @@ live2d-mcp/
 ├── docs/ARCHITECTURE.md
 ├── package.json                 # electron + workspaces 脚本
 ├── electron/
-│   ├── main.cjs | main.ts
-│   ├── preload.cjs
-│   ├── bridge-server.*
-│   ├── mcp-server.*
-│   ├── audio-listener.*
-│   ├── native-process-audio-listener.*
-│   ├── process-discovery.*
-│   ├── listener-status.*
-│   ├── voice-source.*
-│   ├── settings-store.*
-│   ├── settings-view.* / settings-preload.* / settings.html
-│   └── tray.*
-├── renderer/                    # Live2D UI（去独立 WS 依赖，改由 main 桥接）
+│   ├── main.cjs                 # 入口：flags 解析 + 单实例锁 + 事件接线（~90 行）
+│   ├── companion-app.cjs        # CompanionApp 组合根：窗口/托盘/设置/voice 事件汇聚
+│   ├── bridge-service.cjs       # BridgeService：loopback HTTP + MCP 生命周期
+│   ├── bridge-server.cjs / bridge-endpoint.cjs
+│   ├── mcp-server.cjs           # McpSessionManager + 8 工具注册
+│   ├── mcp-protocol.cjs / protocol-utils.cjs / renderer-protocol.cjs
+│   ├── renderer-command-channel.cjs / renderer-commands.cjs
+│   ├── window-interactions.cjs  # WindowInteractionController（拖动/缩放/热区轮询）
+│   ├── window-state.cjs         # 窗口状态模型（sanitize/normalize，零依赖）
+│   ├── voice-listener-manager.cjs # VoiceListenerManager（世代号防陈旧回调）
+│   ├── audio-listener.cjs / native-process-audio-listener.cjs
+│   ├── process-discovery.cjs / listener-status.cjs / voice-source.cjs / voice-events.cjs
+│   ├── settings-store.cjs       # SettingsStore（current 唯一缓存真值）
+│   ├── settings-view.cjs / settings-preload.cjs / settings-channels.cjs
+│   ├── settings/                # 设置窗页面（settings.html + settings-renderer.js）
+│   ├── tray.cjs                 # TrayController
+│   ├── preload.cjs              # 沙箱窄 API（内联副本有 source-probe 护栏）
+│   └── test/                    # node:test 套件
+├── renderer/
+│   └── src/
+│       ├── main.ts              # 入口组合根（启动期断言 + 接线，~90 行）
+│       ├── live2d-app.ts        # Live2DApp：PIXI/Cubism 封装
+│       ├── status-bar.ts / mouse-follow.ts / window-controls.ts
+│       ├── click-interaction.ts / debug-panel.ts
+│       ├── voice-controller.ts / command-dispatcher.ts
+│       ├── lip-sync.ts / voice-state.ts / desktop-interactions.ts  # 纯逻辑
+│       ├── model-config.ts / boot-error.ts / button-group.ts
+│       └── live2d-bridge.d.ts   # preload 窄 API 类型（Live2dApi）
 ├── native/
 │   ├── macos/Live2dAudioListener.mm
 │   └── bin/darwin/live2d-audio-listener
