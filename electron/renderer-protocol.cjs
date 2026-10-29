@@ -4,7 +4,7 @@
  * 生产模式 renderer 静态资源协议（ADR 0001 · F2）
  *
  * 为什么不用 file:// 直接 loadFile：
- *  - Chromium 默认禁止 file:// 页面发起 fetch/XHR，而 pixi-live2d-display
+ *  - Chromium 默认禁止 file:// 页面发起 fetch/XHR，而 Live2D 引擎
  *    加载模型（.model3.json / .moc3 / 贴图）依赖 fetch，file:// 下必失败。
  *  - 自定义 standard+secure scheme 使 '/model/...' 等根绝对路径在
  *    dev（Vite http://127.0.0.1:5173）与 prod（本 scheme）下语义一致，

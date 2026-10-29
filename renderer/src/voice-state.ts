@@ -60,7 +60,7 @@ export function clamp01(value: number): number {
  * 按优先级匹配模型实际参数表；大小写不敏感。
  */
 export const MOUTH_PARAM_ALIASES = [
-  'ParamMouthOpenY', // Cubism 4 标准
+  'ParamMouthOpenY', // Cubism 3+ 标准
   'PARAM_MOUTH_OPEN_Y', // Cubism 2.1 风格
   'ParamMouthOpen',
   'PARAM_MOUTH_OPEN',

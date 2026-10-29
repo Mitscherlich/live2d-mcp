@@ -21,9 +21,10 @@ bun install
 
 ### 2. 准备 Cubism Core 与模型
 
-1. 取得 **Cubism Core 4.x** 的 `live2dcubismcore.min.js`，放入 `renderer/public/`。  
-   - 本项目使用 `pixi-live2d-display` 的 Cubism4 运行时，**请勿使用 Cubism 5 SDK 的 Core 6.x**（会加载成功但画面空白，并可能在渲染时报错）。  
-   - 推荐：Cubism SDK for Web **4-r.x** 的 `Core/live2dcubismcore.min.js`，或与 pixi-live2d-display 示例配套的 4.2 Core。
+1. 取得 **Cubism 5 SDK for Web** 附带的 `Core/live2dcubismcore.min.js`，放入 `renderer/public/`。  
+   - 本项目使用 `untitled-pixi-live2d-engine`（PixiJS v8）的 Cubism 5 Framework，支持 Cubism 3 / 4 / 5 模型。  
+   - 请使用 **Cubism 5 SDK 5-r.4 及以前**附带的 Core 5.x；**5-r.5 起的 Core 6.x 暂不兼容**（引擎内置 Framework 仍读取 Core 6 已私有化的 `drawables.renderOrders`，渲染时报错）。旧的 Cubism 4 SDK Core 也不再推荐。  
+   - 下载：[Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/)。
 2. 从 [Live2D 示例模型](https://www.live2d.com/en/download/sample-data/) 下载 HiyoriPro，将 **runtime** 内容放入 `renderer/public/model/HiyoriPro/`（需含 `hiyori_pro_t11.model3.json` 与贴图/motion）。
 
 目录应为：

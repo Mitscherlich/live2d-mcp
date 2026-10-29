@@ -145,7 +145,7 @@ class CompanionApp {
       this._logger.log('[live2d] voice 测试注入已开启（LIVE2D_VOICE_INJECT=1）：renderer 可经 window.live2d.injectVoice 注入 state/audio-level')
     }
     // 模型路径唯一事实：renderer/src/live2d-app.ts 的 MODEL_PATH
-    this._logger.log('[live2d] 模型资源: Cubism 4 模型与 live2dcubismcore.min.js 放入 renderer/public/（详见 README）；缺模型时窗口内显示引导而不会崩溃')
+    this._logger.log('[live2d] 模型资源: Cubism 3/4/5 模型与 Cubism 5 SDK 的 live2dcubismcore.min.js 放入 renderer/public/（详见 README）；缺模型时窗口内显示引导而不会崩溃')
 
     this._registerIpcHandlers()
     this._createTray()

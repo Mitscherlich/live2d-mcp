@@ -49,8 +49,8 @@ async function main() {
   const buttonGroup = initButtonGroup()
   new WindowControls(canvasContainer, api, buttonGroup)
 
-  // 动态导入渲染核心：pixi-live2d-display/cubism4 在缺少 live2dcubismcore.min.js 时于
-  // 模块加载期抛错（"Could not find Cubism 4 runtime"）；静态 import 会带走整个入口，
+  // 动态导入渲染核心：untitled-pixi-live2d-engine/cubism 在缺少 live2dcubismcore.min.js 时于
+  // 模块加载期抛错（"Could not find Cubism runtime"）；静态 import 会带走整个入口，
   // 缺模引导（FR-D3）将无从显示。Core 缺失与模型 404 两类失败都必须落入引导 UI。
   let app: Live2DApp | null = null
   try {

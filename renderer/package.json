@@ -8,9 +8,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@pixi/unsafe-eval": "6.5.10",
-    "pixi-live2d-display": "^0.4.0",
-    "pixi.js": "6.5.10"
+    "pixi.js": "^8.13.1",
+    "untitled-pixi-live2d-engine": "^1.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

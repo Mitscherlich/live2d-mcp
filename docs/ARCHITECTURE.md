@@ -51,7 +51,7 @@ Electron main (:47832 loopback)
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Renderer（Live2D）                                         │
-│  · pixi.js + pixi-live2d-display                            │
+│  · pixi.js v8 + untitled-pixi-live2d-engine                 │
 │  · expression / motion / parameter / look_at                │
 │  · amplitude lip-sync → ParamMouthOpenY（或等效嘴参）         │
 │  · idle / listening / speaking 状态行为                     │
@@ -78,7 +78,7 @@ Electron main (:47832 loopback)
 | Native listener（进程输出 → level） | `native/` + `electron/audio-listener.*` | 契约一致；macOS 优先（Core Audio process tap），linux/win 预留 |
 | Electron main（lifecycle + bridge + MCP + settings） | `electron/main.*` + `bridge-server.*` + `mcp-server.*` + `settings-store.*` | 职责一致；bridge 默认端口 **47832**（避开 persona 47831） |
 | 沙箱 preload（规范化事件窄桥） | `electron/preload.cjs` | 思路一致 |
-| React + Three.js / VRM 渲染 | **pixi.js + pixi-live2d-display（Live2D Cubism 4）** | **核心差异**：不引入 VRM/Three 角色管线；口型映射到 `ParamMouthOpenY` |
+| React + Three.js / VRM 渲染 | **pixi.js v8 + untitled-pixi-live2d-engine（Live2D Cubism 5 Framework，兼容 Cubism 3/4/5 模型）** | **核心差异**：不引入 VRM/Three 角色管线；口型映射到 `ParamMouthOpenY` |
 | MCP 工具面（window/status/animation） | status/window/model-info/expression/motion（+ 可选 look_at/parameter/reset） | 工具名按 Live2D 语义设计，server 名使用 live2d 系 |
 
 ---
