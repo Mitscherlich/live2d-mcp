@@ -28,7 +28,6 @@ const {
 const { bridgeHttpUrl } = require('./bridge-endpoint.cjs')
 const { BridgeService } = require('./bridge-service.cjs')
 const { RendererCommandChannel } = require('./renderer-command-channel.cjs')
-const { isWindowSender } = require('./protocol-utils.cjs')
 const { VoiceListenerManager } = require('./voice-listener-manager.cjs')
 const { DEFAULT_WINDOW_STATE } = require('./window-state.cjs')
 const { SettingsStore } = require('./settings-store.cjs')
@@ -37,16 +36,20 @@ const {
   SETTINGS_GET_CHANNEL,
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_COPY_CHANNEL,
-  SETTINGS_CHANGED_CHANNEL,
+  SETTINGS_ACTION_CHANNEL,
 } = require('./settings-channels.cjs')
+const { parseCopyKind, parseSettingsAction } = require('./settings-actions.cjs')
+const { SettingsWindows } = require('./settings-windows.cjs')
+const { appIconPath } = require('./icons.cjs')
 const { TrayController, shouldQuitAfterAllWindowsClosed } = require('./tray.cjs')
 const { WindowInteractionController } = require('./window-interactions.cjs')
 
 const WINDOW_WIDTH = DEFAULT_WINDOW_STATE.width
 const WINDOW_HEIGHT = DEFAULT_WINDOW_STATE.height
 const WINDOW_MARGIN = 24
-const SETTINGS_WIDTH = 560
-const SETTINGS_HEIGHT = 700
+// macOS「隐私与安全性 → 屏幕与系统音频录制」deep link（固定值，页面不能传 URL）
+const SCREEN_CAPTURE_SETTINGS_URL =
+  'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
 
 // 测试注入与 UI chrome 的 argv 标志（preload 经 additionalArguments 检测同名标志；
 // 字面量与 preload.cjs 内联副本保持一致，改动需同步）
@@ -57,7 +60,7 @@ class CompanionApp {
   /**
    * @param {object} options
    * @param {object} options.electron Electron 模块面
-   *   { app, BrowserWindow, Menu, Tray, clipboard, ipcMain, nativeImage, screen }
+   *   { app, BrowserWindow, Menu, Tray, clipboard, ipcMain, nativeImage, screen, shell }
    * @param {object} options.flags 启动 flags
    *   { isDev, devServerUrl, voiceInjectEnabled, uiChromeEnabled, distDir }
    * @param {object} [options.logger] 日志出口（默认 console）
@@ -71,6 +74,7 @@ class CompanionApp {
     this._ipcMain = electron.ipcMain
     this._nativeImage = electron.nativeImage
     this._screen = electron.screen
+    this._shell = electron.shell
 
     this._isDev = flags.isDev
     this._devServerUrl = flags.devServerUrl
@@ -80,7 +84,7 @@ class CompanionApp {
     this._logger = logger
 
     this._avatarWindow = null
-    this._settingsWindow = null
+    this._settingsWindows = null
     this._tray = null
     this._isQuitting = false
     this._settingsStore = null
@@ -103,13 +107,20 @@ class CompanionApp {
       registerRendererProtocol(this._distDir)
     }
 
+    // 开发模式也显示 B6；macOS 的 Dock 图标需在 app ready 后单独设置。
+    if (process.platform === 'darwin') this._app.dock.setIcon(appIconPath())
+
     // 窗口交互控制器（需要在 app ready 后，因为依赖 screen 模块）
     this._interactions = new WindowInteractionController({
       ipcMain: this._ipcMain,
       screen: this._screen,
       getWindow: () => this._avatarWindow,
       openSettings: () => this.openSettingsWindow(),
-      onWindowStateChange: (state) => this.persistWindowState(state),
+      onWindowStateChange: (state) => {
+        this.persistWindowState(state)
+        // 角色窗拖动/手势缩放：只在设置窗可见时推送，避免拖动时空发 IPC
+        if (this._settingsWindows?.hasVisibleWindow()) this.notifySettingsChanged()
+      },
     })
 
     // 渲染器命令通道
@@ -124,6 +135,14 @@ class CompanionApp {
     const { warnings: settingsWarnings } = this._settingsStore.load()
     this._interactions.setWindowScale(this._settingsStore.current.window.scale, { notify: false })
     for (const warning of settingsWarnings) this._logger.warn(`[live2d] ${warning}`)
+
+    this._settingsWindows = new SettingsWindows({
+      BrowserWindow: this._BrowserWindow,
+      screen: this._screen,
+      platform: process.platform,
+      preloadPath: path.join(__dirname, 'settings-preload.cjs'),
+      onFullOpened: (section) => this.notifySettingsChanged('', { focusSection: section }),
+    })
 
     this._voice = new VoiceListenerManager({
       platform: process.platform,
@@ -159,12 +178,13 @@ class CompanionApp {
     this.persistWindowState()
   }
 
-  /** will-quit：按依赖反序拆除子系统（voice → interactions → commands → tray → bridge） */
+  /** will-quit：按依赖反序拆除子系统（voice → interactions → commands → 设置窗 → tray → bridge） */
   shutdown() {
     this._voice?.stop()
     this._voice = null
     this._interactions?.dispose()
     this._commands?.dispose()
+    this._settingsWindows?.dispose()
     if (this._tray && !this._tray.isDestroyed()) this._tray.destroy()
     this._tray = null
     if (this._bridge) {
@@ -195,7 +215,13 @@ class CompanionApp {
    * @returns {boolean} 是否成功投递
    */
   dispatchVoiceEvent(raw) {
-    return this._sendVoiceEventTo(this._avatarWindow, raw)
+    const delivered = this._sendVoiceEventTo(this._avatarWindow, raw)
+    // 设置窗实时电平：只在有可见设置窗时再规范化一次（节流在 SettingsWindows）
+    if (delivered && raw?.type === 'audio-level' && this._settingsWindows?.hasVisibleWindow()) {
+      const event = normalizeVoiceEvent(raw)
+      if (event) this._settingsWindows.pushLevel(event.level)
+    }
+    return delivered
   }
 
   _sendVoiceEventTo(win, raw) {
@@ -265,7 +291,8 @@ class CompanionApp {
       roundedCorners: false,
       autoHideMenuBar: true,
       alwaysOnTop: true,
-      title: 'Live2D Companion',
+      title: 'Mayuka',
+      icon: appIconPath(),
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
         contextIsolation: true,
@@ -345,12 +372,14 @@ class CompanionApp {
     if (win.isMinimized()) win.restore()
     if (!win.isVisible()) win.show()
     win.focus()
+    this.notifySettingsChanged()
     return win
   }
 
   /** 隐藏角色窗（与 showAvatarWindow 成对；只隐藏，不退出应用、不销毁窗口） */
   hideAvatarWindow() {
     if (this._avatarWindow && !this._avatarWindow.isDestroyed()) this._avatarWindow.hide()
+    this.notifySettingsChanged()
   }
 
   /** 托盘「重置窗口位置」：恢复右下角默认 bounds 与 100% 缩放并写回设置。 */
@@ -361,7 +390,16 @@ class CompanionApp {
     this._interactions.setWindowScale(DEFAULT_WINDOW_STATE.scale, { notifyRenderer: true })
     this._positionWindow(win)
     this.persistWindowState()
+    this.notifySettingsChanged()
     return win
+  }
+
+  /** 设置窗缩放：经交互控制器 normalize（非法抛错）→ 通知角色窗 → 持久化 */
+  setAvatarScale(scale) {
+    const applied = this._interactions.setWindowScale(scale, { notify: false, notifyRenderer: true })
+    this.persistWindowState()
+    this.notifySettingsChanged()
+    return applied
   }
 
   /** 角色窗当前是否可见（/health 与 MCP get_status 共用，避免两处各写一份判断） */
@@ -373,40 +411,24 @@ class CompanionApp {
 
   // ------------------------------------------------------------- 设置窗
 
-  openSettingsWindow() {
-    if (this._settingsWindow && !this._settingsWindow.isDestroyed()) {
-      this._settingsWindow.show()
-      this._settingsWindow.focus()
-      this.notifySettingsChanged()
-      return this._settingsWindow
-    }
+  /** 完整设置窗（托盘菜单、角色窗齿轮、弹窗「更多设置…」共用） */
+  openSettingsWindow(section = null) {
+    return this._settingsWindows.openFull(section)
+  }
 
-    const win = new this._BrowserWindow({
-      width: SETTINGS_WIDTH,
-      height: SETTINGS_HEIGHT,
-      minWidth: 500,
-      minHeight: 620,
-      show: false,
-      title: 'Live2D Companion 设置',
-      autoHideMenuBar: true,
-      webPreferences: {
-        preload: path.join(__dirname, 'settings-preload.cjs'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    })
-    this._settingsWindow = win
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    win.webContents.on('will-navigate', (event) => event.preventDefault())
-    win.once('ready-to-show', () => {
-      if (!win.isDestroyed()) win.show()
-    })
-    win.on('closed', () => {
-      if (this._settingsWindow === win) this._settingsWindow = null
-    })
-    void win.loadFile(path.join(__dirname, 'settings', 'settings.html'))
-    return win
+  _loginItemState() {
+    const supported = process.platform === 'darwin' || process.platform === 'win32'
+    if (!supported) return { supported: false, openAtLogin: false }
+    try {
+      return { supported: true, openAtLogin: Boolean(this._app.getLoginItemSettings().openAtLogin) }
+    } catch {
+      return { supported: false, openAtLogin: false }
+    }
+  }
+
+  _avatarViewState() {
+    const state = this._currentAvatarWindowState() ?? this._settingsStore.current.window
+    return { visible: this.avatarWindowVisible(), ...state }
   }
 
   settingsViewModel(message = '') {
@@ -417,15 +439,71 @@ class CompanionApp {
         voiceSource: this._settingsStore.current.voiceSource,
         listener: this._voice.summary(),
         environmentOverridesVoice: this._voice.config.environmentOverridesVoice,
+        avatar: this._avatarViewState(),
+        loginItem: this._loginItemState(),
+        settingsFilePath: this._settingsStore.filePath,
+        versions: { app: this._app.getVersion(), electron: process.versions.electron ?? null },
       }),
       effectiveVoiceSource: { ...this._voice.config.source },
       message,
     }
   }
 
-  notifySettingsChanged(message = '') {
-    if (!this._settingsWindow || this._settingsWindow.isDestroyed()) return
-    this._settingsWindow.webContents.send(SETTINGS_CHANGED_CHANNEL, this.settingsViewModel(message))
+  /**
+   * 视图推送到两个设置窗。extra 只用于一次性提示（如 focusSection），不进入视图模型。
+   * 子系统尚未就绪（start 早期 listener 回调）时静默跳过。
+   */
+  notifySettingsChanged(message = '', extra = null) {
+    if (!this._settingsWindows || !this._voice) return
+    this._settingsWindows.broadcast({ ...this.settingsViewModel(message), ...(extra ?? {}) })
+  }
+
+  /** 设置窗 action 执行（负载已由 parseSettingsAction 校验） */
+  _runSettingsAction(action) {
+    switch (action.type) {
+      case 'avatar-show':
+        this.showAvatarWindow()
+        return true
+      case 'avatar-hide':
+        this.hideAvatarWindow()
+        return true
+      case 'avatar-reset':
+        this.resetAvatarWindow()
+        return true
+      case 'set-scale':
+        return this.setAvatarScale(action.scale)
+      case 'open-full':
+        this.openSettingsWindow(action.section)
+        return true
+      case 'close-popover':
+        this._settingsWindows.hidePopover()
+        return true
+      case 'fit-popover':
+        this._settingsWindows.fitPopover(action.height)
+        return true
+      case 'open-permission-settings':
+        if (process.platform !== 'darwin') throw new Error('仅 macOS 需要系统音频录制授权')
+        void this._shell.openExternal(SCREEN_CAPTURE_SETTINGS_URL)
+        return true
+      case 'reveal-settings-file':
+        this._shell.showItemInFolder(this._settingsStore.filePath)
+        return true
+      case 'set-login-item':
+        if (!this._loginItemState().supported) throw new Error('当前平台不支持登录时启动')
+        this._app.setLoginItemSettings({ openAtLogin: action.enabled })
+        this.notifySettingsChanged()
+        return action.enabled
+      case 'quit':
+        this.quit()
+        return true
+      default:
+        throw new Error(`未实现的设置 action：${action.type}`)
+    }
+  }
+
+  quit() {
+    this._isQuitting = true
+    this._app.quit()
   }
 
   _applyPersistedVoiceSource(message = '设置已保存，voice listener 已热更新。') {
@@ -451,10 +529,8 @@ class CompanionApp {
         hideAvatar: () => this.hideAvatarWindow(),
         resetAvatar: () => this.resetAvatarWindow(),
         openSettings: () => this.openSettingsWindow(),
-        quitApp: () => {
-          this._isQuitting = true
-          this._app.quit()
-        },
+        togglePopover: (bounds) => this._settingsWindows.togglePopover(bounds),
+        quitApp: () => this.quit(),
       },
     })
     return this._tray
@@ -470,12 +546,12 @@ class CompanionApp {
     this._interactions.register()
 
     this._ipcMain.handle(SETTINGS_GET_CHANNEL, (event) => {
-      if (!isWindowSender(event, this._settingsWindow)) throw new Error('settings IPC sender 非法')
+      if (!this._settingsWindows.isSender(event)) throw new Error('settings IPC sender 非法')
       return this.settingsViewModel()
     })
 
     this._ipcMain.handle(SETTINGS_SAVE_CHANNEL, (event, voiceSource) => {
-      if (!isWindowSender(event, this._settingsWindow)) {
+      if (!this._settingsWindows.isSender(event)) {
         return { ok: false, error: 'settings IPC sender 非法' }
       }
       try {
@@ -491,10 +567,29 @@ class CompanionApp {
       }
     })
 
-    this._ipcMain.handle(SETTINGS_COPY_CHANNEL, (event) => {
-      if (!isWindowSender(event, this._settingsWindow)) return false
-      this._clipboard.writeText(this.settingsViewModel().codexCommand)
+    this._ipcMain.handle(SETTINGS_COPY_CHANNEL, (event, rawKind) => {
+      if (!this._settingsWindows.isSender(event)) return false
+      let kind
+      try {
+        kind = parseCopyKind(rawKind)
+      } catch {
+        return false
+      }
+      const view = this.settingsViewModel()
+      const text = { codex: view.codexCommand, claude: view.claudeCommand, url: view.mcpUrl }[kind]
+      this._clipboard.writeText(text)
       return true
+    })
+
+    this._ipcMain.handle(SETTINGS_ACTION_CHANNEL, (event, payload) => {
+      if (!this._settingsWindows.isSender(event)) {
+        return { ok: false, error: 'settings IPC sender 非法' }
+      }
+      try {
+        return { ok: true, result: this._runSettingsAction(parseSettingsAction(payload)) }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
     })
 
     // F3 测试注入回环：renderer 调 window.live2d.injectVoice → 本监听 → 规范化 →

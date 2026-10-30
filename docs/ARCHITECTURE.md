@@ -199,11 +199,12 @@ MCP 工具（§5）→ controller（main）→ 本通道 → renderer：链路�
 
 ### 4.5 托盘与设置生命周期（F7 落地）
 
-- `electron/tray.cjs` 用内置 PNG 创建托盘（macOS 使用 template image），菜单动作固定为显示角色窗、隐藏角色窗、重置窗口位置、打开设置、退出；不依赖 persona 或模型资源。
+- `electron/icons.cjs` 统一解析随应用分发的 `electron/assets/icons/` B6 图标资源：macOS Dock 用应用 PNG，窗口在 Windows 用 ICO、其他平台用 PNG；托盘在 macOS 用 18 pt Template + @2x，在 Windows 用多尺寸彩色 ICO，其他平台用彩色 PNG，保留各自 DPI 表示。
+- `electron/tray.cjs` 用上述正式资源创建托盘（macOS 标记为 template image），菜单动作固定为显示角色窗、隐藏角色窗、重置窗口位置、打开设置、退出；不依赖 persona 或模型资源。macOS / Windows 左键开关快捷弹窗、右键弹该菜单（不 `setContextMenu`，否则 macOS 左键被菜单接管）；Linux 托盘不派发 click，沿用 `setContextMenu`。
 - 「把角色窗露出来」只有一处实现：`electron/main.cjs` 的 `showAvatarWindow()`（必要时建窗 → 最小化则 `restore()` → `show()` → `focus()`）。托盘显示/托盘点击、macOS dock `activate`、第二实例唤起、MCP `control_window show|toggle` 全部走它；`windowAction()` 退化为 MCP 适配层，只负责把 show/hide/toggle 翻译成显示或隐藏并返回操作后的可见性。
 - 有可用托盘时，角色窗 `close` 转为 `hide`，`window-all-closed` 不退出；托盘“退出”设置 quitting 状态后走 Electron 正常退出清理 bridge、MCP handler 与 listener。
 - `electron/settings-store.cjs` 将 `{ version, voiceSource, window: { x, y, width, height, scale } }` 保存到 Electron `userData/settings.json`。候选值先经过 `sanitizeVoiceSource` 与窗口状态范围校验，再以同目录临时文件 + rename 原子发布；非法输入不会破坏上一份配置。
-- `settings.html` 通过独立 sandbox preload 暴露的窄 IPC 读取/保存设置、复制 Codex 命令；renderer 无文件系统、clipboard 或任意 IPC 权限。
+- 设置界面分两层（设计见仓库根 `DESIGN.md`）：托盘快捷弹窗 `settings/popover.html`（无边框，贴托盘定位，失焦隐藏）与完整设置窗 `settings/settings.html`（状态条 + 锚点目录）。两窗由 `electron/settings-windows.cjs` 的 `SettingsWindows` 管理，共用同一 sandbox preload：读取/保存设置、按 `codex|claude|url` 复制命令、经 `live2d:settings:action` 发白名单 action（`settings-actions.cjs` 校验），并订阅 view 与实时电平（`dispatchVoiceEvent` 截取，仅推可见窗口、节流 50ms）。renderer 无文件系统、clipboard 或任意 IPC 权限；外部跳转只有固定的系统设置 deep link。
 - 设置窗的 MCP URL 优先取 bridge 实际监听端口，尚未监听时按 `LIVE2D_BRIDGE_PORT`（非法值回退 47832）展示。voice 保存后立即重启 listener；显式 `LIVE2D_*` 环境覆盖仍优先，UI 会提示需移除覆盖并重启。
 
 ---
@@ -251,7 +252,9 @@ live2d-mcp/
 │   ├── process-discovery.cjs / listener-status.cjs / voice-source.cjs / voice-events.cjs
 │   ├── settings-store.cjs       # SettingsStore（current 唯一缓存真值）
 │   ├── settings-view.cjs / settings-preload.cjs / settings-channels.cjs
-│   ├── settings/                # 设置窗页面（settings.html + settings-renderer.js）
+│   ├── settings-windows.cjs     # SettingsWindows：托盘弹窗 + 完整设置窗
+│   ├── settings-actions.cjs     # 设置窗 action 白名单校验
+│   ├── settings/                # popover.html/js/css · settings.html/settings-renderer.js/settings.css · shared.js
 │   ├── tray.cjs                 # TrayController
 │   ├── preload.cjs              # 沙箱窄 API（内联副本有 source-probe 护栏）
 │   └── test/                    # node:test 套件

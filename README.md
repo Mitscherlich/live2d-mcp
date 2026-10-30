@@ -1,166 +1,207 @@
-# Live2D Desktop Companion
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/mayuka-banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="./docs/assets/mayuka-banner-light.svg">
+  <img alt="Mayuka — Your AI, brought to life on your desktop." src="./docs/assets/mayuka-banner-light.svg" width="100%">
+</picture>
 
-Electron 桌面 Live2D 陪伴应用：监听 Codex / ChatGPT 等 agent 进程的系统输出电平驱动口型，并通过本机 MCP 控制表情、动作和角色窗口。
+<p align="center"><strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a></p>
 
-应用只做视觉陪伴：**不提供 TTS、不播放 agent 音频、不采集麦克风、不落盘或上传音频，也不使用 VRM/Three 渲染管线**。
+# Mayuka
 
-- 产品规格：[`SPEC.md`](SPEC.md)
-- 架构说明：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- 默认 bridge：`127.0.0.1:47832`（仅 loopback）
-- 默认 MCP URL：`http://127.0.0.1:47832/mcp`
+**Your AI, brought to life on your desktop.**
 
-## 快速开始（Electron 默认路径）
+Mayuka is a Live2D desktop companion for the AI tools you already use. Let a character accompany Codex, ChatGPT, and other agents: its mouth follows application audio, while MCP gives your agent control over expressions, motions, gaze, and the character window.
 
-需要 [Bun](https://bun.sh) 1.1+（以及 Node.js 20+ 以运行 Electron / `node:test`）；macOS 是当前原生 voice listener 的优先平台。
+Built with Electron, PixiJS, and Live2D Cubism. Native application-audio capture currently targets **macOS 14.2+**; Windows and Linux can use external voice events, with native capture not yet implemented.
 
-### 1. 安装依赖
+## See it in action
+
+<table>
+  <tr>
+    <th width="68%">Settings</th>
+    <th width="32%">Tray quick controls</th>
+  </tr>
+  <tr>
+    <td valign="top"><img src="./docs/assets/demo-settings.png" alt="Running Mayuka settings: live bridge and audio status, voice sources, MCP connection, and character controls" width="100%"></td>
+    <td valign="top"><img src="./docs/assets/demo-tray.png" alt="Running Mayuka tray panel: show or hide the character, reset position, copy MCP, choose a voice source, and adjust scale" width="100%"></td>
+  </tr>
+</table>
+
+Captured from the running macOS application. The current application interface is in Chinese.
+
+## What Mayuka does
+
+- **A character beside your work.** A transparent, always-on-top Live2D window with controls for moving, scaling, and locking the character.
+- **Lip sync from your AI's audio.** Follow a matching process automatically, select an application source, match a custom process pattern, or send external audio-level events.
+- **Expression and motion through MCP.** Let an agent discover the model's capabilities, change expressions, play motions, and control its gaze or parameters.
+- **Quick access from the tray.** Show or hide the character, reset its position, change voice sources, adjust scale, and copy the MCP connection command.
+
+Mayuka provides visual companionship. It does not synthesize or play speech, use the microphone, or save or upload audio. Its bridge listens only on `127.0.0.1`.
+
+## Quick start
+
+### 1. Install dependencies
+
+You need [Bun](https://bun.sh) **1.1+** and **Node.js 20+**.
 
 ```bash
 bun install
 ```
 
-### 2. 准备 Cubism Core 与模型
+### 2. Add Cubism Core and a model
 
-1. 取得 **Cubism 5 SDK for Web** 附带的 `Core/live2dcubismcore.min.js`，放入 `renderer/public/`。  
-   - 本项目使用 `untitled-pixi-live2d-engine`（PixiJS v8）的 Cubism 5 Framework，支持 Cubism 3 / 4 / 5 模型。  
-   - 请使用 **Cubism 5 SDK 5-r.4 及以前**附带的 Core 5.x；**5-r.5 起的 Core 6.x 暂不兼容**（引擎内置 Framework 仍读取 Core 6 已私有化的 `drawables.renderOrders`，渲染时报错）。旧的 Cubism 4 SDK Core 也不再推荐。  
-   - 下载：[Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/)。
-2. 从 [Live2D 示例模型](https://www.live2d.com/en/download/sample-data/) 下载 HiyoriPro，将 **runtime** 内容放入 `renderer/public/model/HiyoriPro/`（需含 `hiyori_pro_t11.model3.json` 与贴图/motion）。
+Cubism Core and character assets are not included in the repository. Obtain them separately and place them under `renderer/public/`.
 
-目录应为：
+1. Get `Core/live2dcubismcore.min.js` from the [Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) and copy it to `renderer/public/`.
+2. Add a Cubism 3, 4, or 5 model, including its `.moc3`, textures, motions, expressions, and other referenced files. The default loader expects the DeepSeek “大肥鱼” model at the path below.
 
 ```text
 renderer/public/
 ├── live2dcubismcore.min.js
 └── model/
-    └── HiyoriPro/
-        ├── hiyori_pro_t11.model3.json
-        └── ...
+    └── DeepSeek/
+        ├── 大肥鱼.model3.json
+        └── …
 ```
 
-缺少这些资源不会让应用硬崩；角色窗会显示准备指引。生产构建在补齐资源后需要重新执行 `bun run build`。
+Use **Core 5.x from Cubism 5 SDK 5-r.4 or earlier**. The current renderer uses `untitled-pixi-live2d-engine` with PixiJS v8 and Cubism 5 Framework; Core 6.x from SDK 5-r.5 onward is not compatible with this integration.
 
-### 3. 启动桌面应用
+To use a different model, update `MODEL_PATH` in [`renderer/src/live2d-app.ts`](renderer/src/live2d-app.ts) and the parameter mappings in [`renderer/src/model-config.ts`](renderer/src/model-config.ts). Missing assets produce setup guidance in the character window.
 
-开发模式（Vite + Electron）：
+### 3. Launch Mayuka
+
+Development, with Vite and Electron:
 
 ```bash
 bun run dev
 ```
 
-生产构建与启动：
+Or build and run the production renderer:
 
 ```bash
 bun run build
 bun start
 ```
 
-启动后系统托盘提供“显示角色窗”“隐藏角色窗”“重置窗口位置”“打开设置”“退出”。关闭角色窗只会隐藏它，应用和 MCP bridge 由托盘保活；请从托盘“退出”结束应用。
+After adding or changing model assets, rebuild before using `bun start`.
 
-角色窗的位置、大小和 CSS 缩放比例会实时保存到 Electron `userData/settings.json`，下次启动自动恢复；恢复位置会沿用至少保留 80×40px 可见区域的边界 snap 规则。锁定状态不保存，每次启动默认可交互。托盘“重置窗口位置”会恢复右下角的 600×640、100% 默认状态。
+Click the tray icon to open quick controls, then **更多设置…** (“More settings”) for the full settings window. Right-click the tray for its context menu; Linux uses that menu directly. Closing the character window hides it while the tray and MCP bridge stay available. Choose **退出 Mayuka** (“Quit Mayuka”) to exit.
 
-### 4. 连接 Codex MCP
+Window position, size, and scale are saved in Electron's `userData/settings.json`. Lock state resets on launch. **Reset position** restores a 600 × 640 window at the bottom right and 100% scale.
 
-应用运行时执行：
+### 4. Connect your agent
+
+With Mayuka running, register its local MCP endpoint:
 
 ```bash
+# Codex
 codex mcp add live2d --url http://127.0.0.1:47832/mcp
+
+# Claude Code
+claude mcp add --transport http live2d http://127.0.0.1:47832/mcp
 ```
 
-同一 URL 也可用于 Claude Code、Hermes 等支持 Streamable HTTP MCP 的客户端。托盘“打开设置”会展示与 bridge **实际监听端口一致**的 MCP URL 和可复制的 Codex 命令。
+Other clients that support Streamable HTTP MCP can connect to the same URL. Settings shows the actual listening port and provides copyable commands.
 
-若设置了自定义端口：
+For a different bridge port:
 
 ```bash
 LIVE2D_BRIDGE_PORT=49000 bun run dev
 codex mcp add live2d --url http://127.0.0.1:49000/mcp
 ```
 
-bridge 永远只绑定 loopback。可用以下接口排障或注入 external voice 事件：
+## Voice sources
 
-```bash
-curl -s http://127.0.0.1:47832/health
+Choose a source from the tray panel or settings. Valid changes apply immediately and restart the listener; invalid input leaves the last valid configuration intact.
 
-curl -s -X POST http://127.0.0.1:47832/events \
-  -H 'content-type: application/json' \
-  -d '{"type":"state","state":{"phase":"active","activity":"speaking"}}'
+| Mode | Behavior | Required fields |
+| --- | --- | --- |
+| `automatic` | Match Codex / ChatGPT / OpenAI process names by default. | None |
+| `application` | Follow one application source. | `source_id`, `source_name` |
+| `custom` | Match processes with a regular expression. | `process_pattern`, at most 200 characters |
+| `external` | Disable native capture and consume local `POST /events` messages. | None |
 
-curl -s -X POST http://127.0.0.1:47832/events \
-  -H 'content-type: application/json' \
-  -d '{"type":"audio-level","level":0.8}'
-```
+On macOS, native capture requires **System Settings → Privacy & Security → Screen & System Audio Recording** permission for the host running Electron. Settings includes a permission shortcut. Denied permission is reported as `permission-denied`; a missing or unusable helper is reported as `unavailable`.
 
-## Voice source 设置
-
-托盘 →“打开设置”可选择四种模式。设置写入 Electron `userData/settings.json`；合法变更会立即重启 listener，无需重启应用。非法 mode、正则或 application source 不会覆盖上一份有效配置。
-
-| 模式 | 行为 | 必要字段 |
-|------|------|----------|
-| `automatic` | 默认按 Codex / ChatGPT / OpenAI 类进程名匹配 | 无 |
-| `application` | 精确监听一个 application source | `source_id` 与 `source_name` |
-| `custom` | 用自定义正则匹配目标进程 | `process_pattern`（合法正则，最多 200 字符） |
-| `external` | 完全关闭原生进程捕获，只消费 loopback `POST /events` | 无 |
-
-现有环境变量仍可覆盖持久化设置：
-
-| 变量 | 说明 |
-|------|------|
-| `LIVE2D_VOICE_SOURCE_MODE` | `automatic` / `application` / `custom` / `external` |
-| `LIVE2D_TARGET_PROCESS_PATTERN` | automatic 的匹配覆盖，或 custom 正则 |
-| `LIVE2D_VOICE_SOURCE_ID` | application source ID |
-| `LIVE2D_VOICE_SOURCE_NAME` | application 展示名 |
-| `LIVE2D_NATIVE_HELPER_PATH` | macOS native helper 路径覆盖（排障用） |
-| `LIVE2D_LISTENER_DEBUG=1` | 输出 listener 协议诊断，不输出音频内容 |
-| `LIVE2D_UI_CHROME=1` | Electron 角色窗显示顶部状态栏 + 底部调试条（默认隐藏） |
-| `LIVE2D_DEVTOOLS=1` | 打开 DevTools，并同时显示角色窗工具条 |
-| `LIVE2D_RENDERER_LOG=1` | 把 renderer `console` 汇入终端（**不**打开工具条） |
-
-### 角色窗 UI 工具条
-
-- **默认**：隐藏顶栏/底栏，只保留角色与透明背景（顶部仍有隐形拖拽区可移动窗口）。
-- **调试时打开工具条**（任选其一）：
-  - `LIVE2D_UI_CHROME=1 bun run dev`
-  - 或 URL 加 `?debug=1` / `?ui=1`
-  - 或 DevTools：`LIVE2D_DEVTOOLS=1 bun run dev`
-  - 或在 renderer 控制台：`localStorage.setItem('live2d.uiChrome','1'); location.reload()`
-
-设置窗检测到环境变量覆盖时会明确提示：表单仍会持久化，但当前进程继续采用环境变量；移除覆盖并重启后才使用已保存值。
-
-### macOS 权限与 external 降级
-
-`automatic` / `application` / `custom` 使用 macOS 进程系统音频监听，需要在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中授权运行 Electron/终端的宿主应用。权限不足时 `/health` 与 MCP `get_status` 会报告 `permission-denied`；helper 缺失或不可用则报告 `unavailable`。
-
-权限暂不可用时切换到 `external`，应用不会启动 native helper，仍可通过 `/events` 驱动口型。该降级路径同样不采麦克风、不含 TTS。
-
-如需从源码构建 macOS universal helper：
+You can use `external` mode while native capture is unavailable. To rebuild the macOS universal helper, install the Xcode command line tools and run:
 
 ```bash
 bun run build:native
 ```
 
-## MCP 工具
+### External events
 
-| 工具 | 说明 |
-|------|------|
-| `get_status` | 查询窗口、bridge、voice/listener 与模型状态 |
-| `control_window` | `show` / `hide` / `toggle` 角色窗 |
-| `get_model_info` | 获取表情、动作组与参数摘要 |
-| `set_expression` | 切换表情 |
-| `play_motion` | 播放动作 |
-| `look_at` | 控制视线方向 |
-| `set_parameter` | 设置 Live2D 参数 |
-| `reset` | 重置表情、动作、视线与参数 |
+Select `external` in settings, then send state and normalized audio levels to the bridge:
 
-不存在 `speak`、`lip_sync*` 或其他 TTS 工具。
+```bash
+# Check the running bridge.
+curl --noproxy '*' -s http://127.0.0.1:47832/health
 
-## 验证
+# Tell the companion that the agent is speaking.
+curl --noproxy '*' -s -X POST http://127.0.0.1:47832/events \
+  -H 'content-type: application/json' \
+  -d '{"type":"state","state":{"phase":"active","activity":"speaking"}}'
+
+# Send an audio level between 0 and 1; send 0 for silence.
+curl --noproxy '*' -s -X POST http://127.0.0.1:47832/events \
+  -H 'content-type: application/json' \
+  -d '{"type":"audio-level","level":0.8}'
+```
+
+## MCP tools
+
+| Tool | Purpose |
+| --- | --- |
+| `get_status` | Inspect the window, bridge, voice listener, and model readiness. |
+| `control_window` | Show, hide, or toggle the character window. |
+| `get_model_info` | List the model's expressions, motion groups, and parameters. |
+| `set_expression` | Select an expression. |
+| `play_motion` | Play a motion from a model motion group. |
+| `look_at` | Set the character's gaze direction. |
+| `set_parameter` | Set a Live2D parameter. |
+| `reset` | Reset expressions, motions, gaze, and parameters. |
+
+Start with `get_model_info` to discover the names supported by your model. Voice comes from your existing AI tools or external events; Mayuka exposes no TTS tools.
+
+## Configuration
+
+Settings are stored in Electron's `userData/settings.json`. Environment variables override saved voice settings for the current process. The UI indicates when an override is active; remove it and restart to use the saved values.
+
+| Variable | Purpose |
+| --- | --- |
+| `LIVE2D_BRIDGE_PORT` | Local bridge port; defaults to `47832`. |
+| `LIVE2D_VOICE_SOURCE_MODE` | `automatic`, `application`, `custom`, or `external`. |
+| `LIVE2D_TARGET_PROCESS_PATTERN` | Override the automatic match or supply the custom regular expression. |
+| `LIVE2D_VOICE_SOURCE_ID` | Application source ID. |
+| `LIVE2D_VOICE_SOURCE_NAME` | Application display name. |
+| `LIVE2D_NATIVE_HELPER_PATH` | Override the native helper path. |
+| `LIVE2D_LISTENER_DEBUG=1` | Log listener protocol diagnostics, without audio contents. |
+| `LIVE2D_UI_CHROME=1` | Show the character window's status bar and debug panel. |
+| `LIVE2D_DEVTOOLS=1` | Open DevTools and show the character window's debug UI. |
+| `LIVE2D_RENDERER_LOG=1` | Forward renderer console messages to the terminal. |
+| `VITE_DEV_SERVER_URL` | Override the development renderer URL, for example `http://127.0.0.1:5174/`. |
+
+The character normally appears without status or debug bars. You can also enable them with `?debug=1`, `?ui=1`, or `localStorage.setItem('live2d.uiChrome', '1')` followed by a reload.
+
+## Development
 
 ```bash
 bun run build
 bun run test
-bun run proof:f4
-bun run proof:f5
-bun run proof:f6
 ```
 
-> 请使用 `bun run test` 执行本仓库 `package.json` 中的 `node:test` 套件。裸命令 `bun test` 会进入 Bun 内置测试器，与本仓库脚本无关。
+Use **`bun run test`**, which runs the repository's `node:test` suites. Bare `bun test` uses Bun's separate test runner.
+
+Runtime proof scripts are available for individual integrations:
+
+```bash
+bun run proof:f3  # Lip sync
+bun run proof:f4  # Local bridge
+bun run proof:f5  # MCP
+bun run proof:f6  # Voice listener
+```
+
+- [Product specification](SPEC.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Application and tray icons](electron/assets/icons/README.md)
+- [README banners and demo screenshots](docs/assets/README.md)

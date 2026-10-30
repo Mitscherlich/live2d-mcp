@@ -16,6 +16,8 @@ const {
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_COPY_CHANNEL,
   SETTINGS_CHANGED_CHANNEL,
+  SETTINGS_ACTION_CHANNEL,
+  SETTINGS_LEVEL_CHANNEL,
 } = require('../settings-channels.cjs')
 const { loadSourceProbe } = require('./helpers/source-probe.cjs')
 
@@ -24,6 +26,8 @@ test('channel 常量固定为 F7 线协议值', () => {
   assert.equal(SETTINGS_SAVE_CHANNEL, 'live2d:settings:save')
   assert.equal(SETTINGS_COPY_CHANNEL, 'live2d:settings:copy-command')
   assert.equal(SETTINGS_CHANGED_CHANNEL, 'live2d:settings:changed')
+  assert.equal(SETTINGS_ACTION_CHANNEL, 'live2d:settings:action')
+  assert.equal(SETTINGS_LEVEL_CHANNEL, 'live2d:settings:level')
 })
 
 test('settings-preload.cjs 内联 channel 与本模块一致（防漂移：真读 preload 源文本）', () => {
@@ -32,6 +36,8 @@ test('settings-preload.cjs 内联 channel 与本模块一致（防漂移：真�
   assert.equal(preload.stringConst('SETTINGS_SAVE_CHANNEL'), SETTINGS_SAVE_CHANNEL)
   assert.equal(preload.stringConst('SETTINGS_COPY_CHANNEL'), SETTINGS_COPY_CHANNEL)
   assert.equal(preload.stringConst('SETTINGS_CHANGED_CHANNEL'), SETTINGS_CHANGED_CHANNEL)
+  assert.equal(preload.stringConst('SETTINGS_ACTION_CHANNEL'), SETTINGS_ACTION_CHANNEL)
+  assert.equal(preload.stringConst('SETTINGS_LEVEL_CHANNEL'), SETTINGS_LEVEL_CHANNEL)
 })
 
 test('main.cjs 复用本模块而非内联副本（避免第三份漂移源）', () => {

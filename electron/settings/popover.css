@@ -1,0 +1,84 @@
+/* 托盘快捷弹窗（DESIGN.md §5.1）：跟随系统深浅色；macOS 由 vibrancy 提供磨砂底 */
+:root {
+  color-scheme: light dark;
+  --pop: #ececf0;
+  --card: #ffffff;
+  --fg: #1d1d1f;
+  --muted: #6e6e76;
+  --line: #d8d8de;
+  --sel: #0a6cff;
+  --field: #e3e3e8;
+  --ok: #1f9a48;
+  --warn: #b26a00;
+  --err: #d1242f;
+  --off: #9a9aa3;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pop: #26262b;
+    --card: #323238;
+    --fg: #f2f2f5;
+    --muted: #9a9aa3;
+    --line: #44444b;
+    --sel: #3d8bff;
+    --field: #3c3c43;
+    --ok: #4cd07d;
+    --warn: #f0a640;
+    --err: #ff6b6b;
+    --off: #6e6e76;
+  }
+}
+/* macOS 窗口透明 + vibrancy：页面只铺一层半透明，保留磨砂 */
+:root[data-platform="darwin"] { --pop: color-mix(in srgb, Canvas 35%, transparent); }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: transparent; color: var(--fg); user-select: none; overflow: hidden; }
+button, input { font: inherit; color: inherit; }
+button { cursor: default; }
+:focus-visible { outline: 2px solid var(--sel); outline-offset: 2px; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; }
+[hidden] { display: none !important; }
+
+.pop { background: var(--pop); border-radius: 12px; padding: 12px; display: grid; gap: 10px; }
+.hd { display: flex; align-items: center; gap: 10px; }
+.av { display: block; width: 36px; height: 36px; border-radius: 10px; object-fit: cover; flex: none; }
+.hd .n { flex: 1; display: grid; min-width: 0; }
+.hd .n small { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--off); margin-right: 4px; vertical-align: 0; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.err { background: var(--err); }
+
+.warnbar { display: flex; gap: 8px; align-items: center; background: color-mix(in srgb, var(--warn) 18%, var(--card)); border-radius: 10px; padding: 8px 12px; font-size: 12px; }
+.warnbar span { flex: 1; }
+
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.tile { border: 0; background: var(--card); border-radius: 10px; padding: 10px 4px 8px; display: grid; justify-items: center; gap: 5px; font-size: 11.5px; }
+.tile .g { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--field); font-size: 14px; }
+.tile.on .g { background: var(--sel); color: #fff; }
+.tile:active .g { filter: brightness(.9); }
+
+.box { background: var(--card); border-radius: 10px; padding: 10px 12px; display: grid; gap: 9px; }
+.r2 { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.r2 small { color: var(--muted); font-size: 11.5px; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r2 input[type="range"] { flex: 1; accent-color: var(--sel); }
+.r2 .mono { width: 40px; text-align: right; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--field); border-radius: 7px; padding: 2px; }
+.seg button { border: 0; background: none; padding: 4px 0; border-radius: 5px; font-size: 11.5px; }
+.seg button[aria-checked="true"] { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .2); }
+.mm { height: 6px; border-radius: 6px; background: var(--field); overflow: hidden; }
+.mm i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--ok), #4d6bfe); transition: width .08s linear; }
+.msg { margin: 0; font-size: 11.5px; color: var(--muted); min-height: 0; }
+.msg:empty { display: none; }
+.msg[data-kind="error"] { color: var(--err); }
+.msg[data-kind="success"] { color: var(--ok); }
+
+.btn { border: 0; background: var(--field); padding: 4px 11px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+.links { display: grid; border-top: 1px solid var(--line); padding-top: 6px; }
+.links button { display: flex; justify-content: space-between; padding: 5px 6px; border: 0; background: none; border-radius: 6px; text-align: left; }
+.links button:hover { background: var(--sel); color: #fff; }
+.links kbd { font-family: inherit; color: var(--muted); font-size: 11.5px; }
+.links button:hover kbd { color: inherit; }
+@media (prefers-reduced-motion: reduce) { .mm i { transition: none; } }

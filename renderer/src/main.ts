@@ -59,7 +59,7 @@ async function main() {
   } catch (e) {
     console.error('[Main] Failed to load Live2D runtime（Cubism Core 未加载？）:', e)
     statusBar.setModelStatus(false)
-    showModelLoadError()
+    showModelLoadError(e)
   }
 
   if (app) {
@@ -76,7 +76,7 @@ async function main() {
       }
     } catch (e) {
       statusBar.setModelStatus(false)
-      showModelLoadError()
+      showModelLoadError(e)
       console.error('[Main] Failed to initialize Live2D:', e)
     }
   }

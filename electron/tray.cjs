@@ -1,14 +1,14 @@
 'use strict'
 
 /**
- * 托盘纯构建模块（ADR 0001 · F7 · FR-D2）。Electron 依赖由 main 注入，
+ * 托盘纯构建模块（ADR 0001 · F7 · FR-D2；DESIGN.md §3.1）。Electron 依赖由 main 注入，
  * 使菜单动作与 window-all-closed 保活语义可由 node:test 直接验证。
+ *
+ * 点击语义：macOS / Windows 左键开关快捷弹窗、右键弹上下文菜单；
+ * Linux 托盘通常不派发 click，沿用 setContextMenu（菜单「打开设置」直达完整窗）。
  */
 
-// 1×1 不透明 PNG；经 nativeImage 放大并在 macOS 标记为 template image。
-// 不依赖 Live2D/persona 角色资源，打包与开发模式均可用。
-const TRAY_ICON_DATA_URL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+const { trayIconPath } = require('./icons.cjs')
 
 function buildTrayMenuTemplate({ showAvatar, hideAvatar, resetAvatar = () => {}, openSettings, quitApp }) {
   return [
@@ -23,18 +23,41 @@ function buildTrayMenuTemplate({ showAvatar, hideAvatar, resetAvatar = () => {},
   ]
 }
 
+/** 该平台托盘是否派发 click / right-click（Linux AppIndicator 不派发） */
+function trayClickSupported(platform) {
+  return platform === 'darwin' || platform === 'win32'
+}
+
 /**
  * 托盘控制器：持有 Tray 实例并内聚保活/销毁语义（此前"controller"返回裸
  * Tray，销毁判断外挂在 main —— 类化后实至名归）。
+ *
+ * actions.togglePopover(bounds) 接收托盘图标的屏幕 bounds，供弹窗定位。
  */
 class TrayController {
   constructor({ Tray, Menu, nativeImage, platform, actions }) {
-    const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL).resize({ width: 18, height: 18 })
+    // 直接加载完整 DPI 资源：macOS 自动合并同目录 @2x，Windows ICO 内含多尺寸。
+    const icon = nativeImage.createFromPath(trayIconPath(platform))
     if (platform === 'darwin') icon.setTemplateImage(true)
     this._tray = new Tray(icon)
-    this._tray.setToolTip('Live2D Companion')
-    this._tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate(actions)))
-    this._tray.on('click', actions.showAvatar)
+    this._tray.setToolTip('Mayuka')
+    const menu = Menu.buildFromTemplate(buildTrayMenuTemplate(actions))
+
+    if (trayClickSupported(platform) && typeof actions.togglePopover === 'function') {
+      // 不 setContextMenu：macOS 上它会接管左键，弹窗就打不开了
+      this._tray.on('click', (_event, bounds) => actions.togglePopover(bounds ?? this.getBounds()))
+      this._tray.on('right-click', () => this._tray.popUpContextMenu(menu))
+    } else {
+      this._tray.setContextMenu(menu)
+      this._tray.on('click', actions.openSettings)
+    }
+  }
+
+  /** 托盘图标屏幕 bounds；平台不支持时返回 null */
+  getBounds() {
+    if (typeof this._tray.getBounds !== 'function') return null
+    const bounds = this._tray.getBounds()
+    return bounds && bounds.width > 0 ? bounds : null
   }
 
   isDestroyed() {
@@ -55,8 +78,8 @@ function shouldQuitAfterAllWindowsClosed(controller) {
 }
 
 module.exports = {
-  TRAY_ICON_DATA_URL,
   TrayController,
   buildTrayMenuTemplate,
   shouldQuitAfterAllWindowsClosed,
+  trayClickSupported,
 }

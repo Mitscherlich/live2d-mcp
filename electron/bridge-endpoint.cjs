@@ -41,10 +41,16 @@ function buildCodexMcpCommand(mcpUrl) {
   return `codex mcp add live2d --url ${mcpUrl}`
 }
 
+/** 设置窗展示的 Claude Code 接入命令（Streamable HTTP） */
+function buildClaudeMcpCommand(mcpUrl) {
+  return `claude mcp add --transport http live2d ${mcpUrl}`
+}
+
 module.exports = {
   DEFAULT_PORT,
   LOOPBACK_HOST,
   bridgeHttpUrl,
+  buildClaudeMcpCommand,
   buildCodexMcpCommand,
   mcpHttpUrl,
   resolveBridgePort,

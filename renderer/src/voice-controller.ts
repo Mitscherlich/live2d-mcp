@@ -95,7 +95,7 @@ export class VoiceController {
 
   /**
    * 助手（Codex）出声时的肢体表现：对齐 persona 的 Listening/Speaking 槽位思想。
-   * Hiyori 无独立 Speaking 组时用 Idle 循环；speaking 时用略高优先级保证口型期间有体态。
+   * 当前模型无独立 Speaking 组时用 Idle 循环；speaking 时用略高优先级保证口型期间有体态。
    * 注意：这是 **agent 播放音频** 的视觉反应，不是用户麦克风说话。
    */
   private applyVoiceBodyMotion(activity: VoiceActivity): void {

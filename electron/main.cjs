@@ -21,6 +21,7 @@ const {
   nativeImage,
   protocol,
   screen,
+  shell,
 } = require('electron')
 const { RENDERER_SCHEME } = require('./renderer-protocol.cjs')
 const { CompanionApp, UI_CHROME_ARG, VOICE_INJECT_ARG } = require('./companion-app.cjs')
@@ -54,7 +55,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-app.setName('Live2D Companion')
+app.setName('Mayuka')
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
@@ -70,6 +71,7 @@ if (!gotSingleInstanceLock) {
       ipcMain,
       nativeImage,
       screen,
+      shell,
     },
     flags: {
       isDev,

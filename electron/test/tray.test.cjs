@@ -2,10 +2,13 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
 const {
   TrayController,
   buildTrayMenuTemplate,
   shouldQuitAfterAllWindowsClosed,
+  trayClickSupported,
 } = require('../tray.cjs')
 
 test('托盘菜单将显示、隐藏、设置与退出动作接到对应回调', () => {
@@ -36,13 +39,9 @@ test('有可用托盘时 window-all-closed 保活；无托盘时退出', () => {
   assert.equal(shouldQuitAfterAllWindowsClosed({ isDestroyed: () => true }), true)
 })
 
-test('托盘控制器使用内置图标并在 macOS 标记为模板图；持有销毁语义', () => {
+function createTrayHarness(platform, extraActions = {}) {
   const events = new Map()
   const image = {
-    resize(options) {
-      assert.deepEqual(options, { width: 18, height: 18 })
-      return this
-    },
     setTemplateImage(value) {
       this.template = value
     },
@@ -52,39 +51,91 @@ test('托盘控制器使用内置图标并在 macOS 标记为模板图；持有�
     constructor(icon) {
       assert.equal(icon, image)
       this.destroyed = false
+      this.contextMenu = null
+      this.poppedUp = null
       rawTray = this
     }
     setToolTip(value) { this.tooltip = value }
-    setContextMenu(value) { this.menu = value }
+    setContextMenu(value) { this.contextMenu = value }
+    popUpContextMenu(value) { this.poppedUp = value }
+    getBounds() { return { x: 1200, y: 0, width: 24, height: 24 } }
     on(name, callback) { events.set(name, callback) }
     isDestroyed() { return this.destroyed }
     destroy() { this.destroyed = true }
   }
-  const menu = { marker: true }
+  const calls = []
   const actions = {
-    showAvatar() {}, hideAvatar() {}, resetAvatar() {}, openSettings() {}, quitApp() {},
+    showAvatar() {}, hideAvatar() {}, resetAvatar() {},
+    openSettings() { calls.push(['settings']) },
+    quitApp() {},
+    togglePopover(bounds) { calls.push(['toggle', bounds]) },
+    ...extraActions,
   }
   const controller = new TrayController({
     Tray: FakeTray,
-    Menu: { buildFromTemplate: (template) => ({ ...menu, template }) },
+    Menu: { buildFromTemplate: (template) => ({ marker: true, template }) },
     nativeImage: {
-      createFromDataURL(dataUrl) {
-        assert.match(dataUrl, /^data:image\/png;base64,/)
+      createFromPath(filePath) {
+        assert.equal(fs.existsSync(filePath), true, '托盘资源应随应用入库')
+        image.filePath = filePath
         return image
       },
     },
-    platform: 'darwin',
+    platform,
     actions,
   })
+  return { controller, rawTray, events, image, calls }
+}
 
+test('macOS 托盘加载 B6 模板及 Retina 配套图；持有销毁语义', () => {
+  const { controller, rawTray, image } = createTrayHarness('darwin')
   assert.equal(image.template, true)
-  assert.equal(rawTray.tooltip, 'Live2D Companion')
-  assert.deepEqual(rawTray.menu.marker, true)
-  assert.equal(events.has('click'), true)
+  assert.equal(path.basename(image.filePath), 'trayTemplate.png')
+  assert.equal(fs.existsSync(image.filePath.replace('.png', '@2x.png')), true)
+  assert.equal(rawTray.tooltip, 'Mayuka')
 
   assert.equal(controller.isDestroyed(), false)
   assert.equal(shouldQuitAfterAllWindowsClosed(controller), false)
   controller.destroy()
   assert.equal(controller.isDestroyed(), true)
   assert.equal(shouldQuitAfterAllWindowsClosed(controller), true)
+})
+
+for (const [platform, filename] of [['win32', 'tray-color.ico'], ['linux', 'tray-color.png']]) {
+  test(`${platform} 托盘使用彩色资源并保留原有 DPI 表示`, () => {
+    const { image } = createTrayHarness(platform)
+    assert.equal(path.basename(image.filePath), filename)
+    assert.notEqual(image.template, true, '彩色图不能作为单色模板加载')
+  })
+}
+
+for (const platform of ['darwin', 'win32']) {
+  test(`${platform}：左键带 bounds 开关弹窗，右键弹菜单，不调用 setContextMenu`, () => {
+    const { rawTray, events, calls } = createTrayHarness(platform)
+    assert.equal(rawTray.contextMenu, null, 'setContextMenu 会在 macOS 接管左键')
+
+    events.get('click')({}, { x: 10, y: 0, width: 22, height: 22 })
+    assert.deepEqual(calls, [['toggle', { x: 10, y: 0, width: 22, height: 22 }]])
+
+    // click 事件不带 bounds 时回退 Tray.getBounds()
+    events.get('click')({})
+    assert.deepEqual(calls[1], ['toggle', { x: 1200, y: 0, width: 24, height: 24 }])
+
+    events.get('right-click')()
+    assert.equal(rawTray.poppedUp.marker, true)
+  })
+}
+
+test('linux：沿用 setContextMenu，click 直达完整设置', () => {
+  const { rawTray, events, calls } = createTrayHarness('linux')
+  assert.equal(rawTray.contextMenu.marker, true)
+  assert.equal(events.has('right-click'), false)
+  events.get('click')()
+  assert.deepEqual(calls, [['settings']])
+})
+
+test('trayClickSupported 只对 darwin / win32 为真', () => {
+  assert.equal(trayClickSupported('darwin'), true)
+  assert.equal(trayClickSupported('win32'), true)
+  assert.equal(trayClickSupported('linux'), false)
 })

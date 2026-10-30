@@ -10,6 +10,7 @@ import 'pixi.js/unsafe-eval'
 import * as PIXI from 'pixi.js'
 import { Live2DModel, Live2DPlugin, type CubismInternalModel } from 'untitled-pixi-live2d-engine/cubism'
 import { showModelLoadError } from './boot-error.js'
+import { PHYSICS_INPUT_DRIVES } from './model-config.ts'
 
 // 模块加载期副作用（main.ts 动态 import 本模块时执行一次）：
 // Cubism Core 缺失时引擎在 import 期抛错（"Could not find Cubism runtime"），
@@ -35,7 +36,7 @@ export interface ParameterInfo {
   defaultValue: number
 }
 
-const MODEL_PATH = '/model/HiyoriPro/hiyori_pro_t11.model3.json'
+const MODEL_PATH = '/model/DeepSeek/大肥鱼.model3.json'
 
 export class Live2DApp {
   private app: PIXI.Application | null = null
@@ -142,7 +143,7 @@ export class Live2DApp {
 
       // 收集模型信息
       this.modelInfo = this.extractModelInfo()
-
+      this.bindPhysicsInputs()
       const bounds = this.model.getBounds(true)
       console.log('[Live2D] Model loaded:', MODEL_PATH, {
         screen: { w: this.app.screen.width, h: this.app.screen.height },
@@ -266,6 +267,23 @@ export class Live2DApp {
       console.error('[Live2D] setParameter failed:', e)
       return false
     }
+  }
+
+  /**
+   * 写在 beforeMotionUpdate：focus 已平滑，动作尚未改参，紧接着的 saveParameters
+   * 会把输入存下来，物理本帧就能读到。缺参的模型 setParameter 直接跳过。
+   */
+  private bindPhysicsInputs(): void {
+    const internal = this.model?.internalModel
+    if (!internal || PHYSICS_INPUT_DRIVES.length === 0) return
+    internal.on('beforeMotionUpdate', () => {
+      const { x, y } = internal.focusController
+      const timeSec = performance.now() / 1000
+      for (const drive of PHYSICS_INPUT_DRIVES) {
+        const breath = Math.sin((timeSec * Math.PI * 2) / drive.breathCycle) * drive.breathAmp
+        this.setParameter(drive.id, drive.x * x + drive.y * y + drive.xy * x * y + breath)
+      }
+    })
   }
 
   /**

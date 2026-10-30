@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mayuka</title>
+    <link rel="stylesheet" href="./popover.css" />
+  </head>
+  <body>
+    <main class="pop" id="pop">
+      <header class="hd">
+        <img class="av" src="../assets/icons/brand.png" width="36" height="36" alt="" aria-hidden="true" />
+        <div class="n">
+          <b>Mayuka</b>
+          <small><span class="dot" id="bridge-dot"></span><span id="bridge-text">bridge</span> · <span class="dot" id="listener-dot"></span><span id="listener-text">listener</span></small>
+        </div>
+      </header>
+
+      <div class="warnbar" id="permission-bar" hidden>
+        <span>未授权「屏幕与系统音频录制」，口型不会动</span>
+        <button class="btn" id="grant" type="button">授权</button>
+      </div>
+
+      <div class="tiles">
+        <button class="tile" id="tile-avatar" type="button"><span class="g">◉</span><span id="tile-avatar-text">显示角色</span></button>
+        <button class="tile" id="tile-reset" type="button"><span class="g">⤢</span>重置位置</button>
+        <button class="tile" id="tile-copy" type="button"><span class="g">⧉</span><span id="tile-copy-text">复制 MCP</span></button>
+      </div>
+
+      <section class="box">
+        <div class="r2"><span>口型来源</span><small id="source-text"></small></div>
+        <div class="seg" id="mode-seg" role="radiogroup" aria-label="口型来源">
+          <button type="button" data-mode="automatic" role="radio">自动</button>
+          <button type="button" data-mode="application" role="radio">应用</button>
+          <button type="button" data-mode="custom" role="radio">正则</button>
+          <button type="button" data-mode="external" role="radio">外部</button>
+        </div>
+        <div class="mm" aria-label="实时电平"><i id="level"></i></div>
+        <p class="msg" id="message" role="status"></p>
+      </section>
+
+      <section class="box">
+        <div class="r2">
+          <label for="scale">缩放</label>
+          <input type="range" id="scale" min="50" max="175" step="5" value="100" />
+          <span class="mono" id="scale-text">100%</span>
+        </div>
+      </section>
+
+      <nav class="links">
+        <button type="button" id="open-full">更多设置…<kbd>⌘,</kbd></button>
+        <button type="button" id="quit">退出 Mayuka<kbd>⌘Q</kbd></button>
+      </nav>
+    </main>
+    <script src="./shared.js"></script>
+    <script src="./popover.js"></script>
+  </body>
+</html>
