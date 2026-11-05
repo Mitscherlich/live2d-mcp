@@ -28,6 +28,18 @@ const MIN_VISIBLE_WIDTH = 80
 const MIN_VISIBLE_HEIGHT = 40
 const GLOBAL_MOUSE_INTERVAL_MS = 33
 
+/**
+ * 鼠标穿透的两种形态（借鉴 persona #61）：
+ *  - 'selective'：透明区穿透、角色热区仍可交互。依赖 setIgnoreMouseEvents 的
+ *    `forward` 选项（Electron 仅 darwin / win32 支持）持续收到 mouse move。
+ *  - 'whole-window'：无 forward 时窗口一旦穿透就收不到任何鼠标事件，renderer 无法
+ *    自行恢复，只能靠托盘「重置窗口位置」（见 releaseMouseIgnore）解除。
+ * 这是"是否支持 forward"规则的唯一落点。
+ */
+function clickThroughModeFor(platform) {
+  return platform === 'darwin' || platform === 'win32' ? 'selective' : 'whole-window'
+}
+
 function normalizeBounds(bounds) {
   const values = [bounds?.x, bounds?.y, bounds?.width, bounds?.height]
   if (!values.every(isFiniteNumber)) throw new TypeError('窗口边界非法')
@@ -72,6 +84,7 @@ class WindowInteractionController {
     getWindow,
     openSettings = () => {},
     onWindowStateChange = () => {},
+    platform = process.platform,
     setIntervalFn = setInterval,
     clearIntervalFn = clearInterval,
   } = {}) {
@@ -90,6 +103,7 @@ class WindowInteractionController {
     this._getWindow = getWindow
     this._openSettings = openSettings
     this._onWindowStateChange = onWindowStateChange
+    this._clickThroughMode = clickThroughModeFor(platform)
     this._setIntervalFn = setIntervalFn
     this._clearIntervalFn = clearIntervalFn
 
@@ -145,7 +159,7 @@ class WindowInteractionController {
         if (typeof win.setIgnoreMouseEvents !== 'function') {
           throw new Error('窗口不支持鼠标穿透')
         }
-        win.setIgnoreMouseEvents(payload.ignore, { forward: true })
+        this._applyMouseIgnore(win, payload.ignore)
         return payload.ignore
       },
       [OPEN_SETTINGS_CHANNEL]: (event) => {
@@ -154,6 +168,29 @@ class WindowInteractionController {
         return true
       },
     }
+  }
+
+  get clickThroughMode() {
+    return this._clickThroughMode
+  }
+
+  _applyMouseIgnore(win, ignore) {
+    if (this._clickThroughMode === 'selective') {
+      win.setIgnoreMouseEvents(ignore, { forward: true })
+    } else {
+      win.setIgnoreMouseEvents(ignore)
+    }
+  }
+
+  /**
+   * 强制解除穿透（托盘「重置窗口位置」的恢复路径）。
+   * whole-window 平台上 renderer 收不到鼠标事件，无法自行关闭穿透，必须由 main 释放。
+   * 返回是否确实下发了释放。
+   */
+  releaseMouseIgnore(win = this._getWindow()) {
+    if (!win || win.isDestroyed() || typeof win.setIgnoreMouseEvents !== 'function') return false
+    this._applyMouseIgnore(win, false)
+    return true
   }
 
   _requireAvatarSender(event) {
@@ -278,5 +315,6 @@ module.exports = {
   MIN_VISIBLE_WIDTH,
   MIN_VISIBLE_HEIGHT,
   GLOBAL_MOUSE_INTERVAL_MS,
+  clickThroughModeFor,
   WindowInteractionController,
 }

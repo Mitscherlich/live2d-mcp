@@ -387,6 +387,8 @@ class CompanionApp {
     const win = this._createAvatarWindow()
     if (win.isDestroyed()) return null
     win.setSize(WINDOW_WIDTH, WINDOW_HEIGHT, false)
+    // 穿透卡死时的唯一出口（whole-window 平台 renderer 收不到鼠标，无法自行恢复）
+    this._interactions.releaseMouseIgnore(win)
     this._interactions.setWindowScale(DEFAULT_WINDOW_STATE.scale, { notifyRenderer: true })
     this._positionWindow(win)
     this.persistWindowState()

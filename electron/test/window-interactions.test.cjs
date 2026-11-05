@@ -13,6 +13,7 @@ const {
   SET_SCALE_EVENT_CHANNEL,
   SET_MOUSE_IGNORE_CHANNEL,
   SET_WINDOW_SCALE_CHANNEL,
+  clickThroughModeFor,
   WindowInteractionController,
 } = require('../window-interactions.cjs')
 
@@ -66,7 +67,7 @@ function createFakeWindow(bounds = { x: 100, y: 80, width: 600, height: 640 }) {
   return win
 }
 
-function setup({ onWindowStateChange = () => {} } = {}) {
+function setup({ onWindowStateChange = () => {}, platform = 'darwin' } = {}) {
   const ipcMain = createFakeIpcMain()
   const win = createFakeWindow()
   const settingsOpened = []
@@ -89,6 +90,7 @@ function setup({ onWindowStateChange = () => {} } = {}) {
       settingsOpened.push(true)
     },
     onWindowStateChange,
+    platform,
     setIntervalFn(callback, delay) {
       const token = { callback, delay }
       intervals.push(token)
@@ -227,7 +229,40 @@ test('移动和缩放实时发出完整窗口状态快照供 settings-store 保�
   assert.deepEqual(changes.at(-1), { x: 120, y: 110, width: 600, height: 640, scale: 1.25 })
 })
 
-test('set-mouse-ignore 只接受布尔值，并始终以 forward=true 切换角色窗穿透', () => {
+test('clickThroughModeFor：仅 darwin / win32 支持 forward 的选择性穿透', () => {
+  assert.equal(clickThroughModeFor('darwin'), 'selective')
+  assert.equal(clickThroughModeFor('win32'), 'selective')
+  assert.equal(clickThroughModeFor('linux'), 'whole-window')
+  assert.equal(clickThroughModeFor('freebsd'), 'whole-window')
+})
+
+test('whole-window 平台（linux）切换穿透时不传 forward 选项', () => {
+  const { ipcMain, win, event, controller } = setup({ platform: 'linux' })
+
+  assert.equal(controller.clickThroughMode, 'whole-window')
+  ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, event, { ignore: true })
+  ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, event, { ignore: false })
+  assert.deepEqual(win.ignoreCalls, [
+    { ignore: true, options: undefined },
+    { ignore: false, options: undefined },
+  ])
+})
+
+test('releaseMouseIgnore：按平台形态解除穿透；窗口已销毁时不下发', () => {
+  const mac = setup({ platform: 'darwin' })
+  assert.equal(mac.controller.releaseMouseIgnore(), true)
+  assert.deepEqual(mac.win.ignoreCalls, [{ ignore: false, options: { forward: true } }])
+
+  const linux = setup({ platform: 'linux' })
+  assert.equal(linux.controller.releaseMouseIgnore(), true)
+  assert.deepEqual(linux.win.ignoreCalls, [{ ignore: false, options: undefined }])
+
+  linux.win.destroyed = true
+  assert.equal(linux.controller.releaseMouseIgnore(), false)
+  assert.equal(linux.win.ignoreCalls.length, 1)
+})
+
+test('set-mouse-ignore 只接受布尔值，selective 平台以 forward=true 切换角色窗穿透', () => {
   const { ipcMain, win, event } = setup()
 
   assert.equal(ipcMain.invoke(SET_MOUSE_IGNORE_CHANNEL, event, { ignore: true }), true)
