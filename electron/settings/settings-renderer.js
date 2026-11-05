@@ -1,6 +1,6 @@
 'use strict'
 
-/** 完整设置窗（DESIGN.md §3.3）：状态条 + 锚点目录 + 单页长滚动。 */
+/** 完整设置窗（DESIGN.md §4.4）：状态条 + 锚点目录 + 单页长滚动。 */
 
 const api = window.live2dSettings
 const shared = window.Live2DSettingsShared

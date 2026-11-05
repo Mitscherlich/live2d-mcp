@@ -1,6 +1,6 @@
 'use strict'
 
-/** 设置窗展示模型（ADR 0001 · F7 · FR-S2；DESIGN.md §4.3），无 Electron 依赖。 */
+/** 设置窗展示模型（ADR 0001 · F7 · FR-S2；docs/specs/settings-ui.md §4.3），无 Electron 依赖。 */
 
 const {
   DEFAULT_PORT,
@@ -25,7 +25,7 @@ function buildMcpUrl({ actualPort, environment = process.env } = {}) {
 }
 
 /**
- * 录屏权限推导（DESIGN.md §5.3）：主进程没有独立的 TCC 查询，
+ * 录屏权限推导（docs/specs/settings-ui.md §4.3）：主进程没有独立的 TCC 查询，
  * 以 listener 摘要为唯一来源——拿不准时如实报 unknown，不假报 granted。
  * @param {{ status?: string } | null | undefined} listener
  * @returns {'granted'|'denied'|'not-required'|'unknown'}

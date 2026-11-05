@@ -1,6 +1,6 @@
 'use strict'
 
-/** 托盘快捷弹窗（DESIGN.md §3.2）。 */
+/** 托盘快捷弹窗（DESIGN.md §4.3）。 */
 
 const api = window.live2dSettings
 const shared = window.Live2DSettingsShared

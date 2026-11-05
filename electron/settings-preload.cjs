@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 设置窗窄桥（F7；DESIGN.md §4.2）：快捷弹窗与完整设置窗共用。
+ * 设置窗窄桥（F7；docs/specs/settings-ui.md §4.2）：快捷弹窗与完整设置窗共用。
  * 只允许读取/保存 voice source、复制固定 MCP 命令、发白名单 action、
  * 订阅 view 与电平推送；action 负载的权威校验在 main（settings-actions.cjs）。
  *

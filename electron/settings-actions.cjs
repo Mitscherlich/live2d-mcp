@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 设置窗 action 负载校验（DESIGN.md §4.2）。
+ * 设置窗 action 负载校验（docs/specs/settings-ui.md §4.2）。
  *
  * 快捷弹窗与完整设置窗经 `live2d:settings:action` 发来 `{ type, ... }`；
  * 本模块是白名单唯一实现点：未知 type、缺参、类型不符一律抛 TypeError，

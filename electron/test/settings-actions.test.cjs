@@ -50,7 +50,7 @@ test('未知 type 与非对象负载被拒绝', () => {
   assert.throws(() => parseSettingsAction({}), TypeError)
 })
 
-test('白名单与 DESIGN.md §4.2 一致', () => {
+test('白名单与 docs/specs/settings-ui.md §4.2 一致', () => {
   assert.deepEqual([...SETTINGS_ACTION_TYPES].sort(), [
     'avatar-hide',
     'avatar-reset',

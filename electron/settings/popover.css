@@ -1,4 +1,4 @@
-/* 托盘快捷弹窗（DESIGN.md §5.1）：跟随系统深浅色；macOS 由 vibrancy 提供磨砂底 */
+/* 托盘快捷弹窗（DESIGN.md §2.2）：跟随系统深浅色；macOS 由 vibrancy 提供磨砂底 */
 :root {
   color-scheme: light dark;
   --pop: #ececf0;

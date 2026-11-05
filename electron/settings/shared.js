@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 快捷弹窗与完整设置窗共用的文案与格式化（DESIGN.md §5.3）。
+ * 快捷弹窗与完整设置窗共用的文案与格式化（DESIGN.md §2.4）。
  * 经 <script src> 先于页面脚本加载，挂到 window.Live2DSettingsShared。
  */
 ;(function () {

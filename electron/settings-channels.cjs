@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 设置窗 IPC 通道常量（ADR 0001 · F7；DESIGN.md §4.2）
+ * 设置窗 IPC 通道常量（ADR 0001 · F7；docs/specs/settings-ui.md §4.2）
  *
  * main（companion-app.cjs 注册 ipcMain.handle / webContents.send）与设置窗
  * preload（electron/settings-preload.cjs 调 invoke / on）必须用同一组通道名，

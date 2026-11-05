@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 设置窗口管理（DESIGN.md §3.2 / §3.3 / §4.1）。
+ * 设置窗口管理（docs/specs/settings-ui.md §3.2 / §3.3 / §4.1）。
  *
  * 持有两个窗口：托盘快捷弹窗（popover.html）与完整设置窗（settings.html）。
  * 负责创建、定位、失焦隐藏、view / level 广播；业务动作（保存、缩放、复制）

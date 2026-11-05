@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * 托盘纯构建模块（ADR 0001 · F7 · FR-D2；DESIGN.md §3.1）。Electron 依赖由 main 注入，
+ * 托盘纯构建模块（ADR 0001 · F7 · FR-D2；docs/specs/settings-ui.md §3.1）。Electron 依赖由 main 注入，
  * 使菜单动作与 window-all-closed 保活语义可由 node:test 直接验证。
  *
  * 点击语义：macOS / Windows 左键开关快捷弹窗、右键弹上下文菜单；
