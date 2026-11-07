@@ -47,12 +47,46 @@ function render(next) {
       : listener.detail ?? listener.text
   $('#source-text').textContent = sourceText
 
+  renderModels()
+
   if (document.activeElement !== $('#scale')) {
     const percent = shared.scalePercent(view.avatar?.scale)
     $('#scale').value = String(percent)
     $('#scale-text').textContent = `${percent}%`
   }
 }
+
+const IMPORT_VALUE = '__import__'
+
+function renderModels() {
+  const lib = view.library
+  const select = $('#model-select')
+  select.replaceChildren()
+  for (const model of lib.models) {
+    const option = document.createElement('option')
+    option.value = model.id
+    option.textContent = model.name
+    select.append(option)
+  }
+  const extra = document.createElement('option')
+  extra.value = IMPORT_VALUE
+  extra.textContent = lib.models.length ? '导入新模型…' : (lib.readiness.core ? '导入模型…' : '去设置安装 Core / 模型…')
+  select.append(extra)
+  select.value = lib.activeId ?? IMPORT_VALUE
+  $('#model-state').textContent = lib.readiness.core && lib.readiness.model ? '' : '未就绪'
+}
+
+$('#model-select').addEventListener('change', async (event) => {
+  const value = event.target.value
+  if (value === IMPORT_VALUE) {
+    await runAction({ type: 'open-full', section: 'model' })
+  } else {
+    showMessage('正在切换…')
+    const result = await runAction({ type: 'model-activate', id: value })
+    showMessage(result?.ok ? '' : result?.error ?? '切换失败', result?.ok ? '' : 'error')
+  }
+  if (view) renderModels()
+})
 
 async function runAction(payload) {
   const result = await api.action(payload)

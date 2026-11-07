@@ -10,14 +10,24 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { DEFAULT_VOICE_SOURCE, sanitizeVoiceSource } = require('./voice-source.cjs')
 const { DEFAULT_WINDOW_STATE, sanitizeWindowState } = require('./window-state.cjs')
+const { isValidModelId } = require('./mayuka-paths.cjs')
 
-const SETTINGS_VERSION = 1
+const SETTINGS_VERSION = 2
+
+/**
+ * Fallback-style sanitize (invalid -> null), like sanitizeWindowState. Whether the id still exists
+ * in the model library is checked by the caller, which owns the library.
+ */
+function sanitizeModel(value) {
+  return { activeId: isValidModelId(value?.activeId) ? value.activeId : null }
+}
 
 function defaultSettings() {
   return {
     version: SETTINGS_VERSION,
     voiceSource: { ...DEFAULT_VOICE_SOURCE },
     window: { ...DEFAULT_WINDOW_STATE },
+    model: { activeId: null },
   }
 }
 
@@ -26,6 +36,7 @@ function sanitizeSettings(value) {
     version: SETTINGS_VERSION,
     voiceSource: sanitizeVoiceSource(value?.voiceSource),
     window: sanitizeWindowState(value?.window),
+    model: sanitizeModel(value?.model),
   }
 }
 
@@ -83,6 +94,11 @@ class SettingsStore {
   /** 只更新窗口状态（保留其余字段） */
   saveWindowState(state) {
     return this.save({ ...this._current, window: state })
+  }
+
+  /** Update only the active model id (null clears it), keeping other fields. */
+  saveActiveModel(activeId) {
+    return this.save({ ...this._current, model: { activeId } })
   }
 
   /** 只更新 voice source（保留其余字段） */

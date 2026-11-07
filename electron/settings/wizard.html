@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mayuka 设置向导</title>
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./wizard.css" />
+  </head>
+  <body>
+    <div class="wiz">
+      <header class="wizard-titlebar">设置 Mayuka</header>
+      <ol class="steps" id="steps" aria-label="设置步骤">
+        <li data-step="0" class="on" aria-current="step"><b aria-hidden="true">1</b><span>欢迎</span></li>
+        <li data-step="1"><b aria-hidden="true">2</b><span>Core</span></li>
+        <li data-step="2"><b aria-hidden="true">3</b><span>模型</span></li>
+        <li data-step="3"><b aria-hidden="true">4</b><span>完成</span></li>
+      </ol>
+      <main class="pane">
+        <section class="group wizard-card welcome" data-pane="0" aria-labelledby="welcome-heading">
+          <header><div class="wizard-icon" aria-hidden="true">m</div><h2 id="welcome-heading">欢迎使用 Mayuka</h2></header>
+          <p class="wizard-copy">Mayuka 是桌面悬浮角色。开始前需要两样东西：Live2D Cubism Core（运行库）和一个角色模型。它们都保存在本机，不会上传。</p>
+          <p class="row hint">Cubism Core 请到 Live2D 官网下载 Cubism SDK for Web 后选择文件。</p>
+        </section>
+        <section class="group wizard-card" data-pane="1" aria-labelledby="core-heading" hidden>
+          <header><div class="wizard-icon"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="2" /><path d="M8 2v3m4-3v3M8 15v3m4-3v3M2 8h3m-3 4h3m10-4h3m-3 4h3" /><rect x="8" y="8" width="4" height="4" rx=".5" /></svg></div><div><h2 id="core-heading">安装 Cubism Core</h2><p class="sub">让 Mayuka 能够显示 Live2D 模型。</p></div></header>
+          <p class="wizard-copy">选择 <span class="mono">live2dcubismcore.min.js</span>，或整个 SDK 的 .zip。</p>
+          <div class="row file-row"><div class="who"><div class="name">live2dcubismcore.min.js</div><div class="sub"><span>状态</span> · <span id="core-state">未安装</span></div></div><button class="cbtn" type="button" id="core-pick"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3m-4 4 4-4 4 4M3 12v4h14v-4" /></svg>选择文件…</button></div>
+          <input type="file" id="core-file" accept=".js,.zip" hidden />
+          <p class="hint feedback" id="core-msg" role="status"></p>
+        </section>
+        <section class="group wizard-card" data-pane="2" aria-labelledby="import-heading" hidden>
+          <header><div class="wizard-icon"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3" /><circle cx="10" cy="8" r="2.3" /><path d="M6 16v-1a4 4 0 0 1 8 0v1" /></svg></div><h2 id="import-heading">导入角色模型</h2></header>
+          <p class="wizard-copy">选择包含 .model3.json、.moc3 和贴图的 .zip。</p>
+          <div class="row file-row"><div class="who"><div class="name">导入模型</div><div class="sub"><span>状态</span> · <span id="model-state">未导入</span></div></div><button class="cbtn" type="button" id="model-pick">选择 .zip…</button></div>
+          <input type="file" id="model-file" accept=".zip" hidden />
+          <p class="hint feedback" id="model-msg" role="status"></p>
+        </section>
+        <section class="group wizard-card welcome" data-pane="3" aria-labelledby="done-heading" hidden>
+          <header><div class="wizard-icon" aria-hidden="true">✓</div><h2 id="done-heading">准备就绪</h2></header>
+          <p class="wizard-copy" id="done-text"></p>
+        </section>
+      </main>
+      <footer class="wizard-footer"><button class="cbtn" type="button" id="back" hidden>上一步</button><button class="later" type="button" id="skip" hidden>稍后</button><button class="cbtn pri" type="button" id="next">下一步</button></footer>
+    </div>
+    <script src="./wizard.js"></script>
+  </body>
+</html>

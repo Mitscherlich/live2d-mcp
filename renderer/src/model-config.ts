@@ -1,36 +1,6 @@
 /**
- * 大肥鱼（DeepSeek）专属配置：换模型时改这里，并同步 live2d-app.ts 的 MODEL_PATH。
- *
- * 本模块零依赖、零副作用，渲染侧任何模块（含被 Node type-stripping 直载的
- * command-dispatcher.ts）都可安全 import——因此 import 路径必须写 `.ts` 扩展名。
- */
-
-/**
- * 点击区域 → 动作分组映射。
- * 大肥鱼 model3.json 未声明 HitArea，点击不绑动作。
- */
-export const HIT_AREA_MOTIONS: Record<string, string> = {}
-
-/**
- * 动作译名：只用于调试面板的按钮文案。
- * 命令通道 / voice 体态等主路径一律用 motionTag() 的原始 group/index。
- */
-export const MOTION_NAMES: Record<string, string> = {
-  'Idle:0': '待机',
-  '默认手切举手:0': '默认手切举手',
-  '举手切默认手:0': '举手切默认手',
-  '狗尾草切换出来:0': '狗尾草切换出来',
-  '狗尾草切回默认手:0': '狗尾草切回默认手',
-  '竖手指切出来动画:0': '竖手指切出来',
-  '竖手指切回默认:0': '竖手指切回默认',
-  '脱捕:0': '脱捕',
-}
-
-/**
- * 物理输入。大肥鱼把 ParamAngleX / ParamBodyAngleX 做成物理输出，
- * 引擎的视线和呼吸写这些输出会被物理覆盖，只剩 ParamEyeBall 在动。
- * 系数对齐 Cubism 默认 focus（±30 / 身体 ±10）和 breath（peak × weight）。
- * 换没有这套输入的模型时把表清空。
+ * Per-model tuning, stored in the model manifest (`overrides`) and delivered by the main
+ * process. Empty tables are the safe default for any model.
  */
 export interface PhysicsInputDrive {
   id: string
@@ -41,12 +11,42 @@ export interface PhysicsInputDrive {
   breathCycle: number
 }
 
-export const PHYSICS_INPUT_DRIVES: readonly PhysicsInputDrive[] = [
-  { id: 'AngleX', x: 30, y: 0, xy: 0, breathAmp: 7.5, breathCycle: 6.5345 },
-  { id: 'AngleY', x: 0, y: 30, xy: 0, breathAmp: 4, breathCycle: 3.5345 },
-  { id: 'AngleZ', x: 0, y: 0, xy: -30, breathAmp: 5, breathCycle: 5.5345 },
-  { id: 'PositionX', x: 10, y: 0, xy: 0, breathAmp: 2, breathCycle: 15.5345 },
-]
+export interface ModelOverrides {
+  /** hit area name -> motion group played on click */
+  hitAreaMotions: Record<string, string>
+  /** "group:index" -> display name, only used for debug panel labels */
+  motionNames: Record<string, string>
+  /** Gaze/breath written as physics inputs for models whose angles are physics outputs */
+  physicsInputDrives: PhysicsInputDrive[]
+}
+
+export const EMPTY_OVERRIDES: ModelOverrides = Object.freeze({
+  hitAreaMotions: {},
+  motionNames: {},
+  physicsInputDrives: [],
+}) as ModelOverrides
+
+/** Validate untrusted manifest data into ModelOverrides (anything malformed is dropped). */
+export function sanitizeOverrides(raw: unknown): ModelOverrides {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const strMap = (v: unknown): Record<string, string> => {
+    const out: Record<string, string> = {}
+    if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) if (typeof val === 'string') out[k] = val
+    }
+    return out
+  }
+  const drives: PhysicsInputDrive[] = []
+  if (Array.isArray(r.physicsInputDrives)) {
+    for (const d of r.physicsInputDrives as Array<Record<string, unknown>>) {
+      const nums = [d?.x, d?.y, d?.xy, d?.breathAmp, d?.breathCycle]
+      if (typeof d?.id === 'string' && nums.every((n) => typeof n === 'number' && Number.isFinite(n)) && (d.breathCycle as number) > 0) {
+        drives.push({ id: d.id, x: d.x as number, y: d.y as number, xy: d.xy as number, breathAmp: d.breathAmp as number, breathCycle: d.breathCycle as number })
+      }
+    }
+  }
+  return { hitAreaMotions: strMap(r.hitAreaMotions), motionNames: strMap(r.motionNames), physicsInputDrives: drives }
+}
 
 /** 状态栏用的动作标识：直接用模型原始 group/index，换模型也不退化 */
 export function motionTag(group: string, index?: number): string {

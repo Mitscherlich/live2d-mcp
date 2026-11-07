@@ -1,6 +1,6 @@
 'use strict'
 
-/** 完整设置窗（DESIGN.md §4.4）：状态条 + 锚点目录 + 单页长滚动。 */
+/** Full settings window: persistent status strip, anchored navigation and one scrolling page. */
 
 const api = window.live2dSettings
 const shared = window.Live2DSettingsShared
@@ -21,7 +21,7 @@ const meterBars = []
 let pendingLevel = null
 let levelTimer = null
 
-// ---------------------------------------------------------------- 工具
+// ---------------------------------------------------------------- Utilities
 
 function setLed(el, tone) {
   el.className = `led ${tone}`
@@ -57,7 +57,7 @@ async function runAction(payload) {
   return result
 }
 
-// ---------------------------------------------------------------- 渲染
+// ---------------------------------------------------------------- Rendering
 
 function selectMode(mode) {
   selectedMode = mode
@@ -92,7 +92,7 @@ function renderStatus() {
   $('#permission-text').textContent = permission.text
   $('#grant').hidden = view.permission !== 'denied'
 
-  // listener 状态变化写入会话日志
+  // Keep listener state changes in the session log.
   const key = `${view.listener?.mode}/${view.listener?.status}/${view.listener?.detail ?? ''}`
   if (key !== lastListenerKey) {
     lastListenerKey = key
@@ -145,6 +145,7 @@ function render(next, { preserveForm = false } = {}) {
   renderAvatar()
   renderGeneral()
   renderDiag()
+  renderLibrary()
   $('#env-notice').hidden = !view.environmentOverridesVoice
   $('#env-flag').hidden = !view.environmentOverridesVoice
   $('#level-mode').textContent = view.voiceSource?.mode ?? '—'
@@ -152,7 +153,7 @@ function render(next, { preserveForm = false } = {}) {
   if (view.message) showMessage(view.message, 'success')
 }
 
-// ---------------------------------------------------------------- 目录
+// ---------------------------------------------------------------- Anchored navigation
 
 const content = $('#content')
 const tocLinks = [...document.querySelectorAll('#toc a')]
@@ -174,10 +175,14 @@ content.addEventListener('scroll', () => {
     const section = document.getElementById(link.getAttribute('href').slice(1))
     if (section.offsetTop - content.offsetTop - 40 <= content.scrollTop) current = link
   }
-  for (const link of tocLinks) link.classList.toggle('on', link === current)
+  for (const link of tocLinks) {
+    link.classList.toggle('on', link === current)
+    if (link === current) link.setAttribute('aria-current', 'location')
+    else link.removeAttribute('aria-current')
+  }
 })
 
-// ---------------------------------------------------------------- 口型来源
+// ---------------------------------------------------------------- Voice source
 
 $('#modes').addEventListener('click', (event) => {
   const button = event.target.closest('.mode')
@@ -213,7 +218,7 @@ $('#voice-form').addEventListener('submit', async (event) => {
   render(result.view)
 })
 
-// 电平图：推送值进滚动缓冲；静音（无推送）时逐帧衰减
+// Push levels into a rolling buffer and decay each frame when no level arrives.
 const meter = $('#meter')
 for (let i = 0; i < METER_BARS; i += 1) meterBars.push(meter.appendChild(document.createElement('i')))
 
@@ -258,7 +263,7 @@ $('#copy').addEventListener('click', async () => {
   }, 1400)
 })
 
-// ---------------------------------------------------------------- 角色窗 / 通用 / 诊断
+// ---------------------------------------------------------------- Avatar / general / diagnostics
 
 $('#scale').addEventListener('input', () => {
   $('#scale-text').textContent = `${$('#scale').value}%`
@@ -277,7 +282,234 @@ $('#login-item').addEventListener('change', async () => {
 $('#grant').addEventListener('click', () => void runAction({ type: 'open-permission-settings' }))
 $('#reveal').addEventListener('click', () => void runAction({ type: 'reveal-settings-file' }))
 
-// ---------------------------------------------------------------- 启动
+// ---------------------------------------------------------------- Model library / Core
+
+let selectedModelId = null
+
+function formatBytes(n) {
+  return n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
+}
+
+function renderLibrary() {
+  const lib = view.library
+  $('#core-warning').hidden = lib.readiness.core
+  $('#core-text').textContent = lib.core.installed ? `已安装 · ${formatBytes(lib.core.bytes ?? 0)}` : '未安装'
+  $('#core-import').textContent = lib.core.installed ? '替换…' : '上传…'
+  $('#core-status').classList.toggle('installed', lib.core.installed)
+  setLed($('#core-led'), lib.core.installed ? 'ok' : 'off')
+  const root = (lib.root ?? '~/.mayuka').replace(/[\\/]+$/, '')
+  const separator = root.includes('\\') ? '\\' : '/'
+  $('#models-path').textContent = `${root}${separator}models`
+  $('#models-path').title = $('#models-path').textContent
+  $('#core-path').textContent = lib.core.path ?? `${root}${separator}core${separator}live2dcubismcore.min.js`
+  $('#core-path').title = $('#core-path').textContent
+  $('#model-count').textContent = `${lib.models.length} 个模型`
+  $('#model-empty').hidden = lib.models.length > 0
+  const grid = $('#model-grid')
+  grid.replaceChildren()
+  for (const model of lib.models) {
+    const card = document.createElement('button')
+    card.type = 'button'
+    card.className = 'model-card'
+    card.dataset.modelId = model.id
+    card.setAttribute('aria-current', String(model.id === lib.activeId))
+    card.setAttribute('aria-pressed', String(model.id === selectedModelId))
+    const thumb = document.createElement('div')
+    thumb.className = 'thumb'
+    if (model.thumb) thumb.style.backgroundImage = `url(${model.thumb})`
+    else {
+      thumb.textContent = thumbFailed.has(model.id) ? '⚠' : '◌'
+      thumb.title = thumbFailed.get(model.id) ?? (view.library.readiness.core ? '正在生成预览图…' : '需要先安装 Cubism Core')
+    }
+    const name = document.createElement('div')
+    name.className = 'name'
+    name.textContent = model.name
+    const caption = document.createElement('div')
+    caption.className = 'model-caption'
+    caption.append(name)
+    if (model.id === lib.activeId) {
+      const badge = document.createElement('span')
+      badge.className = 'badge'
+      badge.textContent = '当前'
+      caption.append(badge)
+    }
+    card.append(thumb, caption)
+    card.addEventListener('click', () => openDrawer(model.id))
+    card.addEventListener('dblclick', () => void runAction({ type: 'model-preview', id: model.id }))
+    grid.append(card)
+  }
+  if (selectedModelId && !lib.models.some((m) => m.id === selectedModelId)) closeDrawer()
+  else if (selectedModelId) fillDrawer()
+  pumpCaptures()
+}
+
+function selectedModel() {
+  return view?.library.models.find((m) => m.id === selectedModelId) ?? null
+}
+
+function fillDrawer() {
+  const model = selectedModel()
+  if (!model) return
+  $('#drawer-name').textContent = model.name
+  $('#drawer-preview-open').disabled = !view.library.readiness.core
+  $('#drawer-meta').textContent = `${formatBytes(model.bytes)} · ${model.motions.length} 动作 · ${model.expressions.length} 表情 · ${model.parts.length} 部件`
+  const active = model.id === view.library.activeId
+  $('#drawer-activate').disabled = active || !view.library.readiness.core
+  $('#drawer-activate').textContent = active ? '当前模型' : '设为当前'
+  $('#drawer-remove').disabled = active
+}
+
+// Previews live in their own window (model-preview.html). The settings page only owns a hidden,
+// one-at-a-time capture frame that renders a still for cards that have no thumbnail yet.
+const PREVIEW_ORIGIN = new URLSearchParams(location.search).get('previewOrigin')
+const thumbFailed = new Map() // id -> reason
+let capture = null // { id, frame, timer }
+
+function finishCapture(reason) {
+  if (!capture) return
+  const { id, frame, timer } = capture
+  clearTimeout(timer)
+  try {
+    frame.contentWindow?.postMessage({ type: 'destroy' }, PREVIEW_ORIGIN)
+  } catch { /* frame already gone */ }
+  frame.remove()
+  capture = null
+  if (reason) {
+    thumbFailed.set(id, reason)
+    if (view) renderLibrary()
+  }
+  pumpCaptures()
+}
+
+function pumpCaptures() {
+  if (capture || !PREVIEW_ORIGIN || !view?.library.readiness.core) return
+  const next = view.library.models.find((m) => !m.thumb && !thumbFailed.has(m.id))
+  if (!next) return
+  const frame = document.createElement('iframe')
+  frame.className = 'capture-frame'
+  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
+  frame.setAttribute('aria-hidden', 'true')
+  frame.tabIndex = -1
+  frame.src = `${PREVIEW_ORIGIN}/preview.html`
+  document.body.append(frame)
+  capture = { id: next.id, frame, timer: setTimeout(() => finishCapture('预览超时'), 30000) }
+}
+
+window.addEventListener('message', async (event) => {
+  if (!capture || event.source !== capture.frame.contentWindow || event.origin !== PREVIEW_ORIGIN) return
+  const msg = event.data
+  if (!msg || typeof msg !== 'object') return
+  const { id } = capture
+  if (msg.type === 'ready') {
+    capture.frame.contentWindow.postMessage({ type: 'load', id }, PREVIEW_ORIGIN)
+  } else if (msg.type === 'loaded' && msg.id === id) {
+    // Give the ticker a couple of frames to draw before grabbing it.
+    setTimeout(() => capture?.id === id && capture.frame.contentWindow?.postMessage({ type: 'snapshot', id }, PREVIEW_ORIGIN), 500)
+  } else if (msg.type === 'snapshot' && msg.id === id) {
+    if (msg.ok && msg.png instanceof ArrayBuffer) {
+      const result = await api.saveThumbnail(id, msg.png)
+      finishCapture(result?.ok ? null : '缩略图保存失败')
+    } else {
+      finishCapture('截图失败')
+    }
+  } else if (msg.type === 'error') {
+    finishCapture(String(msg.error).slice(0, 60))
+  }
+})
+
+function openDrawer(id) {
+  selectedModelId = id
+  $('#model-drawer').hidden = false
+  updateModelSelection()
+  fillDrawer()
+}
+
+function closeDrawer() {
+  selectedModelId = null
+  $('#model-drawer').hidden = true
+  updateModelSelection()
+}
+
+function updateModelSelection() {
+  for (const card of document.querySelectorAll('#model-grid .model-card')) {
+    card.setAttribute('aria-pressed', String(card.dataset.modelId === selectedModelId))
+  }
+}
+window.addEventListener('pagehide', () => finishCapture(null))
+
+$('#drawer-preview-open').addEventListener('click', () => {
+  if (selectedModelId) void runAction({ type: 'model-preview', id: selectedModelId })
+})
+$('#drawer-close').addEventListener('click', closeDrawer)
+$('#drawer-activate').addEventListener('click', async () => {
+  if (!selectedModelId) return
+  $('#drawer-activate').disabled = true
+  const result = await runAction({ type: 'model-activate', id: selectedModelId })
+  if (result?.ok) $('#import-message').textContent = '已切换角色'
+  else $('#drawer-activate').disabled = false
+})
+$('#drawer-remove').addEventListener('click', async () => {
+  const model = selectedModel()
+  if (!model || !confirm(`删除「${model.name}」？此操作不可恢复。`)) return
+  await runAction({ type: 'model-remove', id: model.id })
+})
+$('#models-reveal').addEventListener('click', () => void runAction({ type: 'reveal-models-dir' }))
+$('#core-reveal').addEventListener('click', () => void runAction({ type: 'reveal-core' }))
+$('#core-warning-go').addEventListener('click', () => scrollToSection('general'))
+
+async function importModelFile(file) {
+  const progress = $('#import-progress')
+  progress.hidden = false
+  progress.textContent = '准备导入…'
+  $('#import-message').textContent = ''
+  const result = await api.importModel(file)
+  progress.hidden = true
+  $('#import-message').textContent = result?.ok ? '导入完成' : `导入失败：${result?.error ?? '未知错误'}`
+}
+
+const dropzone = $('#dropzone')
+$('#model-pick').addEventListener('click', () => $('#model-file').click())
+dropzone.addEventListener('click', (event) => {
+  event.preventDefault()
+  $('#model-file').click()
+})
+dropzone.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    $('#model-file').click()
+  }
+})
+dropzone.addEventListener('dragover', (event) => {
+  event.preventDefault()
+  dropzone.classList.add('over')
+})
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'))
+dropzone.addEventListener('drop', (event) => {
+  event.preventDefault()
+  dropzone.classList.remove('over')
+  const file = event.dataTransfer?.files?.[0]
+  if (file) void importModelFile(file)
+})
+$('#model-file').addEventListener('change', (event) => {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (file) void importModelFile(file)
+})
+api.onModelProgress((p) => {
+  $('#import-progress').textContent = `${p?.label ?? '导入中'} (${p?.step ?? '?'}/${p?.total ?? '?'})`
+})
+
+$('#core-import').addEventListener('click', () => $('#core-file').click())
+$('#core-file').addEventListener('change', async (event) => {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  $('#core-message').textContent = '正在导入…'
+  const result = await api.importCore(file)
+  $('#core-message').textContent = result?.ok ? 'Cubism Core 已安装' : `导入失败：${result?.error ?? '未知错误'}`
+})
+
+// ---------------------------------------------------------------- Startup
 
 api.onChanged((next) => render(next, { preserveForm: true }))
 api

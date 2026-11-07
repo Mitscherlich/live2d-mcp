@@ -9,8 +9,7 @@
 import 'pixi.js/unsafe-eval'
 import * as PIXI from 'pixi.js'
 import { Live2DModel, Live2DPlugin, type CubismInternalModel } from 'untitled-pixi-live2d-engine/cubism'
-import { showModelLoadError } from './boot-error.js'
-import { PHYSICS_INPUT_DRIVES } from './model-config.ts'
+import { EMPTY_OVERRIDES, type ModelOverrides } from './model-config.ts'
 
 // 模块加载期副作用（main.ts 动态 import 本模块时执行一次）：
 // Cubism Core 缺失时引擎在 import 期抛错（"Could not find Cubism runtime"），
@@ -21,6 +20,9 @@ PIXI.extensions.add(Live2DPlugin)
 Live2DModel.registerTicker(PIXI.Ticker)
 
 type CubismLive2DModel = Live2DModel<CubismInternalModel>
+
+// PixiJS v8 DestroyOptions; the engine's d.ts still declares the narrower v7 shape, hence the cast.
+const FULL_DESTROY = { children: true, texture: true, textureSource: true } as unknown as Parameters<CubismLive2DModel['destroy']>[0]
 
 export interface ModelInfo {
   expressions: string[]
@@ -36,12 +38,17 @@ export interface ParameterInfo {
   defaultValue: number
 }
 
-const MODEL_PATH = '/model/DeepSeek/大肥鱼.model3.json'
-
 export class Live2DApp {
   private app: PIXI.Application | null = null
   private model: CubismLive2DModel | null = null
   private modelInfo: ModelInfo | null = null
+  /** Per-model tuning delivered with the active model (hit areas, physics drives, labels) */
+  private overrides: ModelOverrides = EMPTY_OVERRIDES
+  /** True while a swap is in flight; commands should answer "busy" instead of touching a half-built model */
+  private swapping = false
+  /** Fit-to-window scale chosen at load; zoom multiplies it */
+  private baseScale = 1
+  private physicsHandler: (() => void) | null = null
   private hitAreaGraphics: PIXI.Graphics | null = null
   /** hitArea id → drawable 下标：overlay 开启时建一次，关闭时丢弃（每帧全量查 ids 太贵） */
   private hitAreaDrawables: Map<string, number> | null = null
@@ -81,84 +88,135 @@ export class Live2DApp {
     // 暴露诊断句柄（仅开发/排障）
     ;(canvas as unknown as { __PIXI_APP?: PIXI.Application }).__PIXI_APP = this.app
 
-    await this.loadModel()
+    // Single per-frame model update; follows whatever model is current across hot swaps.
+    this.app.ticker.add(() => {
+      if (!this.model) return
+      try {
+        this.model.update(this.app!.ticker.deltaMS)
+      } catch (err) {
+        if (!(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged) {
+          ;(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged = true
+          console.error('[Live2D] model.update failed:', err)
+        }
+      }
+    })
   }
 
-  private async loadModel(): Promise<void> {
-    if (!this.app) throw new Error('App not initialized')
-
+  /** Draw the current stage synchronously so the canvas can be read back right away (snapshots). */
+  renderNow(): boolean {
+    if (!this.app || !this.model) return false
     try {
-      // 先按页面地址解析成绝对 URL：根相对路径交给 PIXI v8 Assets 补全时，
-      // 自定义 scheme（prod 的 live2d-app://root/）会丢 host，贴图请求变成 live2d-app://model/...
-      const modelUrl = new URL(MODEL_PATH, window.location.href).href
-      this.model = (await Live2DModel.from(modelUrl, {
-        // 关闭自动鼠标交互（命中检测 / 视线跟随），由 MCP 控制
+      this.model.update(0)
+      this.app.renderer.render(this.app.stage)
+      return true
+    } catch (e) {
+      console.warn('[Live2D] renderNow failed:', e)
+      return false
+    }
+  }
+
+  /** Tear everything down (preview page): model, ticker and the WebGL context. */
+  destroy(): void {
+    this.unloadModel()
+    if (this.app) {
+      try {
+        this.app.destroy(false, { children: true, texture: true, textureSource: true } as never)
+      } catch (e) {
+        console.warn('[Live2D] app destroy failed:', e)
+      }
+      this.app = null
+    }
+  }
+
+  isBusy(): boolean {
+    return this.swapping
+  }
+
+  getOverrides(): ModelOverrides {
+    return this.overrides
+  }
+
+  /** Release the current model and every per-model resource (idempotent). */
+  unloadModel(): void {
+    if (!this.app) return
+    this.showHitAreaOverlay(false)
+    const old = this.model
+    this.model = null
+    this.modelInfo = null
+    this.parameterIndices.clear()
+    if (old) {
+      if (this.physicsHandler) {
+        try { old.internalModel.off('beforeMotionUpdate', this.physicsHandler) } catch { /* already detached */ }
+      }
+      this.app.stage.removeChild(old)
+      try {
+        old.destroy(FULL_DESTROY)
+      } catch (e) {
+        console.warn('[Live2D] model destroy failed:', e)
+      }
+    }
+    this.physicsHandler = null
+    this.overrides = EMPTY_OVERRIDES
+  }
+
+  /**
+   * Load a model and hot-swap it in. The new model is fully built first; only on success is
+   * the old one destroyed, so a failure leaves the current model running untouched.
+   */
+  async loadModel(modelPath: string, overrides: ModelOverrides = EMPTY_OVERRIDES): Promise<void> {
+    if (!this.app) throw new Error('App not initialized')
+    if (this.swapping) throw new Error('A model swap is already in progress')
+    this.swapping = true
+    let next: CubismLive2DModel | null = null
+    try {
+      // Resolve to an absolute URL first: root-relative paths handed to PIXI v8 Assets lose the
+      // host under the custom prod scheme (live2d-app://root/), breaking texture requests.
+      const modelUrl = new URL(modelPath, window.location.href).href
+      next = (await Live2DModel.from(modelUrl, {
+        // Mouse hit-test/focus are driven by MCP and our own handlers
         autoHitTest: false,
         autoFocus: false,
-        // 由 app.ticker 显式驱动模型更新（与渲染同一条 ticker，避免空白画布）
+        // The app ticker drives updates explicitly
         autoUpdate: false,
       })) as CubismLive2DModel
 
-      // 等待至少一帧，确保 mesh/bounds 就绪（部分 Core/显卡组合首次 width/height 为 0）
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve())
-      })
-      this.model.update(0)
+      // Wait one frame so mesh/bounds are ready (some Core/GPU combos report 0 size at first)
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      next.update(0)
 
-      const rawW = this.model.width || this.model.getBounds?.(true)?.width || 0
-      const rawH = this.model.height || this.model.getBounds?.(true)?.height || 0
-      // 部分环境下 getBounds 更可靠；若仍为 0，用合理默认防止 scale=Infinity/0
+      const rawW = next.width || next.getBounds?.(true)?.width || 0
+      const rawH = next.height || next.getBounds?.(true)?.height || 0
       const modelW = rawW > 1 ? rawW : 1000
       const modelH = rawH > 1 ? rawH : 1500
+      next.anchor.set(0.5, 0.5)
+      next.position.set(this.app.screen.width / 2, this.app.screen.height / 2)
+      this.baseScale = Math.min(this.app.screen.width / modelW, this.app.screen.height / modelH) * 0.9
+      next.scale.set(this.baseScale)
 
-      this.model.anchor.set(0.5, 0.5)
-      this.model.position.set(this.app.screen.width / 2, this.app.screen.height / 2)
-
-      // 自适应缩放
-      const scale =
-        Math.min(this.app.screen.width / modelW, this.app.screen.height / modelH) * 0.9
-      this.model.scale.set(scale)
-
-      this.app.stage.addChild(this.model)
-
-      this.app.ticker.add(() => {
-        if (!this.model) return
-        try {
-          this.model.update(this.app!.ticker.deltaMS)
-        } catch (err) {
-          // 单帧失败不炸掉 ticker；打一次日志
-          if (!(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged) {
-            ;(this as unknown as { _updateErrLogged?: boolean })._updateErrLogged = true
-            console.error('[Live2D] model.update failed:', err)
-          }
-        }
-      })
-
-      // 播放默认 Idle，避免 T 姿势/静止不可见
+      // Success: now (and only now) retire the old model.
+      this.unloadModel()
+      this.model = next
+      this.overrides = overrides
+      this.app.stage.addChild(next)
       try {
-        void this.model.motion('Idle').catch(() => {})
+        void next.motion('Idle').catch(() => {})
       } catch {
-        /* Idle 不存在时忽略 */
+        /* no Idle group */
       }
-
-      // 收集模型信息
       this.modelInfo = this.extractModelInfo()
       this.bindPhysicsInputs()
-      const bounds = this.model.getBounds(true)
-      console.log('[Live2D] Model loaded:', MODEL_PATH, {
-        screen: { w: this.app.screen.width, h: this.app.screen.height },
-        modelSize: { rawW, rawH, modelW, modelH },
-        scale,
-        pos: { x: this.model.position.x, y: this.model.position.y },
-        bounds: { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height },
+      console.log('[Live2D] Model loaded:', modelUrl, {
         paramCount: this.modelInfo?.parameters?.length ?? 0,
         motions: this.modelInfo?.motionGroups,
       })
-      console.log('[Live2D] Model info:', this.modelInfo)
     } catch (e) {
+      if (next && next !== this.model) {
+        try { next.destroy(FULL_DESTROY) } catch { /* ignore */ }
+      }
       console.error('[Live2D] Failed to load model:', e)
-      showModelLoadError(e)
       throw e
+    } finally {
+      this.swapping = false
     }
   }
 
@@ -208,6 +266,68 @@ export class Live2DApp {
 
   getModelInfo(): ModelInfo | null {
     return this.modelInfo
+  }
+
+  /** Multiply the fit-to-window scale (preview inspector zoom). */
+  setZoom(zoom: number): boolean {
+    if (!this.model || !Number.isFinite(zoom)) return false
+    this.model.scale.set(this.baseScale * Math.min(3, Math.max(0.3, zoom)))
+    return true
+  }
+
+  /** Part ids with their current opacity (preview inspector). */
+  getPartList(): Array<{ id: string; opacity: number }> {
+    if (!this.model) return []
+    try {
+      const parts = this.model.internalModel.coreModel.getModel().parts
+      const list: Array<{ id: string; opacity: number }> = []
+      for (let i = 0; i < parts.count; i++) list.push({ id: String(parts.ids[i]), opacity: parts.opacities?.[i] ?? 1 })
+      return list
+    } catch {
+      return []
+    }
+  }
+
+  setPartVisible(partId: string, visible: boolean): boolean {
+    if (!this.model) return false
+    try {
+      const core = this.model.internalModel.coreModel
+      const parts = core.getModel().parts
+      for (let i = 0; i < parts.count; i++) {
+        if (String(parts.ids[i]) === partId) {
+          core.setPartOpacityByIndex(i, visible ? 1 : 0)
+          return true
+        }
+      }
+    } catch (e) {
+      console.error('[Live2D] setPartVisible failed:', e)
+    }
+    return false
+  }
+
+  /** Individual motion files per group, for the preview inspector. */
+  getMotionFiles(): Array<{ group: string; index: number; name: string }> {
+    if (!this.model) return []
+    const settings = this.model.internalModel.settings.json as Record<string, unknown>
+    const refs = (settings['FileReferences'] as Record<string, unknown> | undefined) ?? settings
+    const motions = (refs['Motions'] as Record<string, Array<{ File?: string }>> | undefined) ?? {}
+    const out: Array<{ group: string; index: number; name: string }> = []
+    for (const [group, list] of Object.entries(motions)) {
+      if (!Array.isArray(list)) continue
+      list.forEach((m, index) => {
+        const base = String(m?.File ?? `${group}_${index}`).split('/').pop() ?? ''
+        out.push({ group, index, name: base.replace(/\.motion3\.json$/i, '') })
+      })
+    }
+    return out
+  }
+
+  /** DisplayInfo (cdi3) file path relative to the model entry, if declared. */
+  getDisplayInfoFile(): string | null {
+    if (!this.model) return null
+    const settings = this.model.internalModel.settings.json as Record<string, unknown>
+    const refs = (settings['FileReferences'] as Record<string, unknown> | undefined) ?? settings
+    return typeof refs['DisplayInfo'] === 'string' ? (refs['DisplayInfo'] as string) : null
   }
 
   // 切换表情
@@ -275,15 +395,17 @@ export class Live2DApp {
    */
   private bindPhysicsInputs(): void {
     const internal = this.model?.internalModel
-    if (!internal || PHYSICS_INPUT_DRIVES.length === 0) return
-    internal.on('beforeMotionUpdate', () => {
+    const drives = this.overrides.physicsInputDrives
+    if (!internal || drives.length === 0) return
+    this.physicsHandler = () => {
       const { x, y } = internal.focusController
       const timeSec = performance.now() / 1000
-      for (const drive of PHYSICS_INPUT_DRIVES) {
+      for (const drive of drives) {
         const breath = Math.sin((timeSec * Math.PI * 2) / drive.breathCycle) * drive.breathAmp
         this.setParameter(drive.id, drive.x * x + drive.y * y + drive.xy * x * y + breath)
       }
-    })
+    }
+    internal.on('beforeMotionUpdate', this.physicsHandler)
   }
 
   /**

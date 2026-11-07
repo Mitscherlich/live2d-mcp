@@ -24,25 +24,16 @@ export class VoiceController {
   private readonly offVoice: () => void
 
   constructor(
-    private readonly app: Live2DApp | null,
+    private app: Live2DApp | null,
     api: Live2dApi,
     private readonly statusBar: StatusBar,
   ) {
-    const info = app?.getModelInfo() ?? null
-    if (info) {
-      const mouthId = resolveMouthParamId(info.parameters.map((p) => p.id))
-      if (mouthId) {
-        const p = info.parameters.find((param) => param.id === mouthId)!
-        this.mouthParam = { id: p.id, min: p.min, max: p.max }
-      } else {
-        console.warn('[Voice] 模型参数表无 ParamMouthOpenY 或等效嘴参，口型写入 no-op（仅一次）')
-      }
-    }
+    this.mouthParam = this.resolveMouth()
 
     this.lip = createVoiceLipSync({
       mouthParam: this.mouthParam,
       writeMouth: (paramId, value) => {
-        if (paramId && app) app.setParameter(paramId, value)
+        if (paramId && this.app) this.app.setParameter(paramId, value)
         // 无嘴参/无模型：no-op（快照仍记录 lastMouthWrite，证明目标值被驱动）
       },
     })
@@ -56,10 +47,7 @@ export class VoiceController {
     })
 
     if (app) {
-      app.addTicker((dt) => {
-        this.lip.tick(dt)
-        this.syncVoice()
-      })
+      this.attachTicker(app)
     } else {
       let prev = performance.now()
       const frame = (t: number) => {
@@ -76,13 +64,51 @@ export class VoiceController {
     window.__live2dVoiceDebug = {
       snapshot: () => ({
         ...this.lip.snapshot(),
-        modelLoaded: app?.isLoaded() ?? false,
+        modelLoaded: this.app?.isLoaded() ?? false,
         injectEnabled: typeof api.injectVoice === 'function',
       }),
     }
     console.log(`[Voice] 口型驱动已挂接（嘴参: ${this.mouthParam?.id ?? '未解析（no-op）'}，注入: ${
       typeof api.injectVoice === 'function' ? '开' : '关'
     }）`)
+  }
+
+  private resolveMouth(): MouthParamTarget | null {
+    const info = this.app?.getModelInfo() ?? null
+    if (!info) return null
+    const mouthId = resolveMouthParamId(info.parameters.map((p) => p.id))
+    if (!mouthId) {
+      console.warn('[Voice] 模型参数表无 ParamMouthOpenY 或等效嘴参，口型写入 no-op')
+      return null
+    }
+    const p = info.parameters.find((param) => param.id === mouthId)!
+    return { id: p.id, min: p.min, max: p.max }
+  }
+
+  private attachTicker(app: Live2DApp): void {
+    app.addTicker((dt) => {
+      this.lip.tick(dt)
+      this.syncVoice()
+    })
+  }
+
+  /** The app can appear after boot (first Core/model install): hand it over and switch to its ticker. */
+  setApp(app: Live2DApp): void {
+    if (this.app === app) return
+    this.app = app
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle)
+      this.rafHandle = null
+    }
+    this.attachTicker(app)
+    this.rebindMouth()
+  }
+
+  /** Re-resolve the mouth parameter after a model swap (ids and ranges differ per model). */
+  rebindMouth(): void {
+    this.mouthParam = this.resolveMouth()
+    this.lip.setMouthParam(this.mouthParam)
+    console.log(`[Voice] mouth rebound: ${this.mouthParam?.id ?? 'none (no-op)'}`)
   }
 
   dispose(): void {

@@ -22,8 +22,8 @@ Mayuka 是陪伴你使用 AI 的 Live2D 桌面角色。让它陪在 Codex、Chat
     <th width="32%">托盘快捷弹窗</th>
   </tr>
   <tr>
-    <td valign="top"><img src="./docs/assets/demo-settings.png" alt="实际运行的 Mayuka 设置页：bridge 与音频状态、口型来源、MCP 连接和角色窗控制" width="100%"></td>
-    <td valign="top"><img src="./docs/assets/demo-tray.png" alt="实际运行的 Mayuka 托盘弹窗：显示或隐藏角色、重置位置、复制 MCP、切换口型来源和缩放" width="100%"></td>
+    <td valign="top"><img src="./docs/assets/demo-settings.png" alt="浅色模式下实际运行的 Mayuka 中文设置页：模型库、当前角色预览、导入控件和绿色运行状态栏" width="100%"></td>
+    <td valign="top"><img src="./docs/assets/demo-tray.png" alt="浅色模式下实际运行的 Mayuka 中文托盘弹窗：模型选择、角色显隐、重置位置、MCP 快捷操作、口型来源和缩放" width="100%"></td>
   </tr>
 </table>
 
@@ -50,23 +50,14 @@ bun install
 
 ### 2. 准备 Cubism Core 与模型
 
-仓库不包含 Cubism Core 和角色模型资源，请单独取得后放入 `renderer/public/`。
+仓库不包含 Cubism Core 和角色模型。首次启动 Mayuka 会自动打开设置向导（之后也可在托盘菜单 → 设置向导… 打开）：
 
-1. 从 [Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) 中取得 `Core/live2dcubismcore.min.js`，复制到 `renderer/public/`。
-2. 放入 Cubism 3、4 或 5 模型，并保留它引用的 `.moc3`、贴图、动作、表情等文件。默认加载器使用以下 DeepSeek「大肥鱼」模型路径。
+1. 从 [Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) 选择 `Core/live2dcubismcore.min.js`（或整个 SDK 的 `.zip`）。
+2. 选择模型 `.zip`，需包含 `.model3.json`、`.moc3`、贴图、动作与表情（Cubism 3、4 或 5）。
 
-```text
-renderer/public/
-├── live2dcubismcore.min.js
-└── model/
-    └── DeepSeek/
-        ├── 大肥鱼.model3.json
-        └── …
-```
+两者都保存在 `~/.mayuka/`（`core/`、`models/`；可用 `MAYUKA_HOME` 改位置）。之后可在 设置 → 角色模型 或托盘里导入、预览和切换更多模型。
 
 请使用 **Cubism 5 SDK 5-r.4 及以前附带的 Core 5.x**。当前渲染器使用 `untitled-pixi-live2d-engine`、PixiJS v8 与 Cubism 5 Framework，暂不兼容 SDK 5-r.5 起附带的 Core 6.x。
-
-更换模型时，修改 [`renderer/src/live2d-app.ts`](renderer/src/live2d-app.ts) 中的 `MODEL_PATH`，并调整 [`renderer/src/model-config.ts`](renderer/src/model-config.ts) 的参数映射。资源缺失时，角色窗会显示准备指引。
 
 ### 3. 启动 Mayuka
 

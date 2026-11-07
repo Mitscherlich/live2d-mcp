@@ -2,146 +2,134 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:"
-    />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src live2d-app://root http://127.0.0.1:5173" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mayuka 设置</title>
+    <link rel="stylesheet" href="./tokens.css" />
     <link rel="stylesheet" href="./settings.css" />
   </head>
   <body>
     <div class="app">
-      <header class="bar">
-        <span class="t">mayuka · settings</span>
-        <span class="ver mono" id="versions"></span>
-      </header>
+      <aside class="sidebar" aria-label="设置导航">
+        <div class="traffic-space" aria-hidden="true"></div>
+        <div class="brand">Mayuka</div>
+        <nav class="toc" id="toc">
+          <a href="#voice" class="on" aria-current="location"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8v4m3-7v10m4-12v14m4-12v10m3-7v4" /></svg>口型来源</a>
+          <a href="#mcp"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="m8 12 4-4m-6 3-1 1a3 3 0 0 0 4 4l3-3a3 3 0 0 0 0-4m-4 2a3 3 0 0 1 0-4l3-3a3 3 0 0 1 4 4l-1 1" /></svg>MCP 连接</a>
+          <a href="#model"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3" /><circle cx="10" cy="8" r="2.3" /><path d="M6 16v-1a4 4 0 0 1 8 0v1" /></svg>角色模型</a>
+          <a href="#avatar"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" /><path d="M3 7h14m-11-2h.01m2 0h.01" /></svg>角色窗</a>
+          <a href="#general"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="m8 2 4 0 .7 2.3 2 .9 2.2-.5 2 3.5-1.6 1.8v2l1.6 1.8-2 3.5-2.2-.5-2 .9L12 20H8l-.7-2.3-2-.9-2.2.5-2-3.5L2.7 12v-2L1.1 8.2l2-3.5 2.2.5 2-.9z" transform="translate(1 0) scale(.9)" /><circle cx="10" cy="10" r="2.5" /></svg>通用</a>
+          <a href="#diag"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 16V9m4 7V5m5 11v-5m5 5V3" /></svg>诊断</a>
+        </nav>
+        <div class="env" id="env-flag" hidden>⚠ LIVE2D_* 覆盖中<br />重启后生效</div>
+        <div class="sidebar-foot"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 6 2v5c0 4-3 6.7-6 9-3-2.3-6-5-6-9V4z" /><path d="m7.5 9.5 1.7 1.7 3.5-3.7" /></svg>仅在本机运行</div>
+      </aside>
 
+      <header class="bar"><span>设置</span></header>
       <section class="status" aria-label="运行状态">
-        <div class="st">
-          <span class="k">bridge</span>
-          <span class="v"><span class="led" id="bridge-led"></span><span id="bridge-text">—</span></span>
-          <span class="s" id="bridge-sub"></span>
-        </div>
-        <div class="st">
-          <span class="k">listener</span>
-          <span class="v"><span class="led" id="listener-led"></span><span id="listener-text">—</span></span>
-          <span class="s" id="listener-sub"></span>
-        </div>
-        <div class="st">
-          <span class="k">permission</span>
-          <span class="v"><span class="led" id="permission-led"></span><span id="permission-text">—</span></span>
-          <span class="s"><span>屏幕与系统音频录制</span><button class="link" id="grant" type="button" hidden>去开启 ↗</button></span>
-        </div>
+        <div class="st"><span class="k">BRIDGE</span><div class="status-info"><span class="v"><span class="led" id="bridge-led"></span><span id="bridge-text">—</span></span><span class="s" id="bridge-sub"></span></div></div>
+        <div class="st"><span class="k">LISTENER</span><div class="status-info"><span class="v"><span class="led" id="listener-led"></span><span id="listener-text">—</span></span><span class="s" id="listener-sub"></span></div></div>
+        <div class="st"><span class="k">PERMISSION</span><div class="status-info"><span class="v"><span class="led" id="permission-led"></span><span id="permission-text">—</span></span><span class="s permission-detail" title="屏幕与系统音频录制">屏幕与系统音频录制</span><button class="link" id="grant" type="button" hidden>去开启 ↗</button></div></div>
       </section>
 
-      <div class="body">
-        <nav class="toc" id="toc">
-          <a href="#voice" class="on">口型来源</a>
-          <a href="#mcp">MCP 连接</a>
-          <a href="#avatar">角色窗</a>
-          <a href="#general">通用</a>
-          <a href="#diag">诊断</a>
-          <div class="sp"></div>
-          <div class="env" id="env-flag" hidden>⚠ LIVE2D_* 覆盖中<br />重启后生效</div>
-        </nav>
-
-        <main class="content" id="content">
-          <section class="sec" id="voice">
-            <h2>口型来源 <span>settings.voiceSource</span></h2>
-            <form id="voice-form" class="stack">
-              <div class="modes" id="modes" role="radiogroup" aria-label="模式">
-                <button class="mode" type="button" data-mode="automatic" role="radio"><b>automatic</b><small>自动匹配 Codex / ChatGPT</small></button>
-                <button class="mode" type="button" data-mode="application" role="radio"><b>application</b><small>固定一个应用 source</small></button>
-                <button class="mode" type="button" data-mode="custom" role="radio"><b>custom</b><small>自定义进程正则</small></button>
-                <button class="mode" type="button" data-mode="external" role="radio"><b>external</b><small>仅接受 /events</small></button>
-              </div>
-
-              <div class="kv" data-for="custom" hidden>
-                <label for="process-pattern">process_pattern</label>
-                <input class="input" id="process-pattern" maxlength="200" autocomplete="off" placeholder="例如 codex|chatgpt" />
-              </div>
-              <div class="stack" data-for="application" hidden>
-                <div class="kv">
-                  <label for="source-id">source_id</label>
-                  <input class="input" id="source-id" maxlength="2080" autocomplete="off" placeholder="process:darwin:&lt;base64url&gt;" />
+      <main class="content" id="content">
+        <section class="sec" id="voice" aria-labelledby="voice-heading">
+          <header class="page-heading"><h2 id="voice-heading">口型来源</h2></header>
+          <form id="voice-form" class="stack">
+            <div class="group">
+              <div class="row mode-row">
+                <div class="modes seg" id="modes" role="radiogroup" aria-label="模式">
+                  <button class="mode" type="button" data-mode="automatic" role="radio" aria-checked="true"><b>automatic</b><small>自动匹配 Codex / ChatGPT</small></button>
+                  <button class="mode" type="button" data-mode="application" role="radio" aria-checked="false"><b>application</b><small>固定一个应用 source</small></button>
+                  <button class="mode" type="button" data-mode="custom" role="radio" aria-checked="false"><b>custom</b><small>自定义进程正则</small></button>
+                  <button class="mode" type="button" data-mode="external" role="radio" aria-checked="false"><b>external</b><small>仅接受 /events</small></button>
                 </div>
-                <div class="kv">
-                  <label for="source-name">source_name</label>
-                  <input class="input" id="source-name" maxlength="120" autocomplete="off" placeholder="例如 ChatGPT" />
-                </div>
-                <p class="hint">使用进程发现生成的稳定 source ID；非法或空值不会写入设置。</p>
               </div>
-              <div class="kv" data-for="external" hidden>
-                <span class="lbl">endpoint</span>
-                <div class="term"><span id="events-url"></span></div>
+              <div class="row kv" data-for="custom" hidden><label for="process-pattern">process_pattern</label><input class="input mono" id="process-pattern" maxlength="200" autocomplete="off" placeholder="例如 codex|chatgpt" /></div>
+              <div class="field-group" data-for="application" hidden>
+                <div class="row kv"><label for="source-id">source_id</label><input class="input mono" id="source-id" maxlength="2080" autocomplete="off" placeholder="process:darwin:&lt;base64url&gt;" /></div>
+                <div class="row kv"><label for="source-name">source_name</label><input class="input mono" id="source-name" maxlength="120" autocomplete="off" placeholder="例如 ChatGPT" /></div>
+                <p class="row hint">使用进程发现生成的稳定 source ID；非法或空值不会写入设置。</p>
               </div>
-
-              <p class="notice" id="env-notice" hidden>
-                检测到 LIVE2D_* voice 环境变量覆盖。这里的设置仍会保存，但当前进程继续采用环境变量；移除覆盖并重启后生效。
-              </p>
-
-              <div class="meter-wrap">
-                <div class="meter" id="meter" aria-label="实时电平"></div>
-                <div class="meter-read"><span>level</span><b id="level-value">0.00</b><span id="level-mode">automatic</span></div>
-              </div>
-              <div class="log" id="log" aria-label="listener 状态日志"></div>
-
-              <div class="actions">
-                <span class="msg" id="message" role="status">保存后立即重启 listener</span>
-                <button class="cbtn" type="button" id="revert">还原</button>
-                <button class="cbtn pri" type="submit">保存并应用</button>
-              </div>
-            </form>
-          </section>
-
-          <section class="sec" id="mcp">
-            <h2>MCP 连接 <span>Streamable HTTP</span></h2>
-            <div class="tabs" id="cli-tabs" role="tablist">
-              <button type="button" role="tab" data-kind="codex" aria-selected="true">Codex</button>
-              <button type="button" role="tab" data-kind="claude" aria-selected="false">Claude Code</button>
-              <button type="button" role="tab" data-kind="url" aria-selected="false">URL</button>
+              <div class="row kv" data-for="external" hidden><span class="lbl">endpoint</span><div class="term"><span id="events-url"></span></div></div>
             </div>
-            <div class="term"><span class="p" id="cmd-prefix">$</span><span id="cmd"></span><button class="cbtn" type="button" id="copy">复制</button></div>
-            <div class="kv"><span class="lbl">port</span><span class="mono" id="port-text"></span></div>
-            <div class="kv"><span class="lbl">tools</span><span class="mono dim">get_status · control_window · get_model_info · set_expression · play_motion · look_at · set_parameter · reset</span></div>
-          </section>
-
-          <section class="sec" id="avatar">
-            <h2>角色窗 <span>settings.window</span></h2>
-            <div class="kv">
-              <label for="scale">scale</label>
-              <input type="range" id="scale" min="50" max="175" step="5" value="100" />
-              <span class="mono" id="scale-text">100%</span>
+            <p class="notice" id="env-notice" hidden>检测到 LIVE2D_* voice 环境变量覆盖。这里的设置仍会保存，但当前进程继续采用环境变量；移除覆盖并重启后生效。</p>
+            <div class="group">
+              <div class="row meter-wrap"><div class="meter" id="meter" aria-label="实时电平"></div><div class="meter-read"><span>level</span><b id="level-value">0.00</b><span id="level-mode">automatic</span></div></div>
+              <div class="row log" id="log" aria-label="listener 状态日志"></div>
             </div>
-            <div class="kv">
-              <span class="lbl">bounds</span>
-              <span class="mono" id="bounds-text">—</span>
-              <span class="row-actions">
-                <button class="cbtn" type="button" id="avatar-toggle">隐藏</button>
-                <button class="cbtn" type="button" id="avatar-reset">重置</button>
-              </span>
+            <div class="actions"><span class="msg" id="message" role="status">保存后立即重启 listener</span><button class="cbtn" type="button" id="revert">还原</button><button class="cbtn pri" type="submit">保存并应用</button></div>
+          </form>
+        </section>
+
+        <section class="sec" id="mcp" aria-labelledby="mcp-heading">
+          <header class="page-heading"><h2 id="mcp-heading">MCP 连接 <span>Streamable HTTP</span></h2></header>
+          <div class="group">
+            <div class="row"><div class="tabs seg" id="cli-tabs" role="tablist" aria-label="MCP 客户端"><button type="button" role="tab" data-kind="codex" aria-selected="true">Codex</button><button type="button" role="tab" data-kind="claude" aria-selected="false">Claude Code</button><button type="button" role="tab" data-kind="url" aria-selected="false">URL</button></div></div>
+            <div class="row term"><span class="p" id="cmd-prefix">$</span><span id="cmd"></span><button class="cbtn" type="button" id="copy">复制</button></div>
+            <div class="row kv"><span class="lbl">port</span><span class="mono" id="port-text"></span></div>
+            <div class="row kv"><span class="lbl">tools</span><span class="mono dim">get_status · control_window · get_model_info · set_expression · play_motion · look_at · set_parameter · reset</span></div>
+          </div>
+        </section>
+
+        <section class="sec" id="model" aria-labelledby="model-heading">
+          <header class="page-heading"><h2 id="model-heading">角色模型</h2><p class="hint">双击模型卡片，在独立窗口中预览（动作、表情、部件、缩放）。单击查看信息与操作。</p></header>
+          <p class="notice" id="core-warning" hidden>还没有安装 Cubism Core，模型无法显示。 <button class="link" type="button" id="core-warning-go">去「通用」安装 ↗</button></p>
+          <div class="group model-library">
+            <div class="row group-head"><h3>模型库</h3><span class="count" id="model-count"></span></div>
+            <div class="model-grid" id="model-grid" role="group" aria-label="本地模型"></div>
+            <p class="empty hint" id="model-empty" hidden>还没有模型，导入一个 .zip 开始使用。</p>
+            <aside class="row drawer" id="model-drawer" aria-label="模型信息与操作" hidden>
+              <div class="who"><div class="drawer-head"><b class="name" id="drawer-name"></b><button class="link drawer-close" type="button" id="drawer-close" aria-label="关闭" title="关闭">×</button></div><p class="sub" id="drawer-meta"></p></div>
+              <div class="row-actions"><button class="cbtn" type="button" id="drawer-preview-open">放大预览<svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6m0-6-9 9M8 4H4v12h12v-4" /></svg></button><button class="cbtn soft" type="button" id="drawer-activate">设为当前</button><button class="cbtn danger" type="button" id="drawer-remove">删除</button></div>
+            </aside>
+          </div>
+          <div class="group import-group">
+            <div class="row import-row">
+              <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="导入模型">
+                <span class="drop-icon"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3m-4 4 4-4 4 4M3 12v4h14v-4" /></svg></span>
+                <div class="who"><b class="name">导入模型</b><small class="sub">拖入或点击选择 .zip（含 .model3.json、.moc3 与贴图）</small><span class="progress" id="import-progress" role="status" hidden></span></div>
+              </div>
+              <button class="cbtn" type="button" id="model-pick">选择文件…</button>
             </div>
-            <p class="hint">也可以在角色窗上用手势缩放、拖动；重置会回到屏幕右下角 600×640、100%。</p>
-          </section>
+            <div class="row storage-row"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 6V4.5h6l2 2h7v9a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1zM2.5 7h15" /></svg><div class="who"><code id="models-path"></code><span class="sub">模型存储位置</span></div><button class="cbtn" type="button" id="models-reveal">在文件夹中显示</button></div>
+          </div>
+          <input type="file" id="model-file" accept=".zip" hidden />
+          <p class="hint feedback" id="import-message" role="status"></p>
+        </section>
 
-          <section class="sec" id="general">
-            <h2>通用</h2>
-            <label class="tog" id="login-row">
-              <span>登录时启动<small>openAtLogin</small></span>
-              <input type="checkbox" id="login-item" />
-            </label>
-            <p class="hint" id="login-unsupported" hidden>当前平台不支持登录时启动。</p>
-            <p class="hint">本应用只读取音量电平：不采集麦克风、不录音、不上传，也不播放 agent 音频。</p>
-          </section>
+        <section class="sec" id="avatar" aria-labelledby="avatar-heading">
+          <header class="page-heading"><h2 id="avatar-heading">角色窗</h2></header>
+          <div class="group">
+            <div class="row kv"><label for="scale">scale</label><input type="range" id="scale" min="50" max="175" step="5" value="100" /><span class="mono" id="scale-text">100%</span></div>
+            <div class="row kv bounds-row"><span class="lbl">bounds</span><span class="mono" id="bounds-text">—</span><span class="row-actions"><button class="cbtn" type="button" id="avatar-toggle">隐藏</button><button class="cbtn" type="button" id="avatar-reset">重置</button></span></div>
+          </div>
+          <p class="hint after-note">也可以在角色窗上用手势缩放、拖动；重置会回到屏幕右下角 600×640、100%。</p>
+        </section>
 
-          <section class="sec" id="diag">
-            <h2>诊断 <span>userData</span></h2>
-            <div class="term"><span class="p">↳</span><span id="settings-path"></span><button class="cbtn" type="button" id="reveal">在文件夹中显示</button></div>
-            <div class="kv"><span class="lbl">runtime</span><span class="mono dim" id="runtime-text"></span></div>
-          </section>
-        </main>
-      </div>
+        <section class="sec" id="general" aria-labelledby="general-heading">
+          <header class="page-heading"><h2 id="general-heading">通用</h2><p class="hint">启动方式与运行组件。</p></header>
+          <h3 class="section-label">启动</h3>
+          <div class="group"><label class="row general-row tog" id="login-row"><span class="who"><span class="name">登录时启动</span><small class="sub">登录后，让角色出现在桌面上。</small></span><input class="switch" type="checkbox" role="switch" id="login-item" /></label><p class="row hint" id="login-unsupported" hidden>当前平台不支持登录时启动。</p></div>
+          <h3 class="section-label">运行组件</h3>
+          <div class="group">
+            <div class="row general-row"><div class="who"><div class="name">Cubism Core</div><p class="sub">Live2D 模型的本地运行组件</p></div><div class="row-actions"><span class="core-status" id="core-status"><span class="led" id="core-led"></span><span id="core-text">—</span></span><button class="cbtn" type="button" id="core-import">上传…</button><button class="cbtn" type="button" id="core-reveal">显示</button></div></div>
+            <div class="row storage-row"><div class="who"><div class="name">存储位置</div><p class="sub mono" id="core-path"></p></div><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 6V4.5h6l2 2h7v9a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1zM2.5 7h15" /></svg></div>
+          </div>
+          <input type="file" id="core-file" accept=".js,.zip" hidden />
+          <p class="hint after-note" id="core-message" role="status">从 Live2D 官网下载 Cubism SDK for Web，上传 live2dcubismcore.min.js 或整个 SDK zip。</p>
+          <p class="hint privacy-note"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 6 2v5c0 4-3 6.7-6 9-3-2.3-6-5-6-9V4z" /><path d="m7.5 9.5 1.7 1.7 3.5-3.7" /></svg><span>本应用只读取音量电平：不采集麦克风、不录音、不上传，也不播放 agent 音频。</span></p>
+        </section>
+
+        <section class="sec" id="diag" aria-labelledby="diag-heading">
+          <header class="page-heading"><h2 id="diag-heading">诊断</h2></header>
+          <div class="group">
+            <div class="row term"><span class="p">↳</span><span id="settings-path"></span><button class="cbtn" type="button" id="reveal">在文件夹中显示</button></div>
+            <div class="row kv"><span class="lbl">Mayuka</span><span class="mono dim" id="versions"></span></div>
+            <div class="row kv"><span class="lbl">runtime</span><span class="mono dim" id="runtime-text"></span></div>
+          </div>
+        </section>
+      </main>
     </div>
     <script src="./shared.js"></script>
     <script src="./settings-renderer.js"></script>

@@ -18,6 +18,7 @@ import type { StatusBar } from './status-bar.js'
 
 const MODEL_MISSING =
   'Live2D 模型未加载（Cubism Core 或模型资源缺失，见窗口内引导）；命令未执行'
+const MODEL_BUSY = 'Live2D 模型正在切换（busy），请稍后重试；命令未执行'
 
 /** StatusBar 在本模块用到的写入面（测试可用假对象满足） */
 export type CommandStatusSink = Pick<StatusBar, 'noteExpression' | 'noteMotion' | 'resetExpressionMotion'>
@@ -29,7 +30,8 @@ export class CommandDispatcher {
   private readonly off: () => void
   // 字段逐个赋值而非参数属性：parameter property 是运行时语法，
   // Node type-stripping 直载不支持。
-  private readonly app: Live2DApp | null
+  // Mutable: main.ts hands over the app once it exists (it may boot without a model).
+  private app: Live2DApp | null
   private readonly statusBar: CommandStatusSink
 
   constructor(app: Live2DApp | null, api: Live2dApi, statusBar: CommandStatusSink) {
@@ -42,11 +44,16 @@ export class CommandDispatcher {
         counts: { ...this.counts },
         lastCommand: this.lastCommand,
         lastError: this.lastError,
-        modelLoaded: app?.isLoaded() ?? false,
+        modelLoaded: this.app?.isLoaded() ?? false,
         channelAttached: Boolean(this.off),
       }),
     }
     console.log('[Command] main→renderer 命令通道已挂接（MCP 视觉工具可执行）')
+  }
+
+  /** Attach / replace the app instance (e.g. after the empty state resolves into a real boot). */
+  setApp(app: Live2DApp | null): void {
+    this.app = app
   }
 
   dispose(): void {
@@ -62,6 +69,10 @@ export class CommandDispatcher {
       return { ok: true, data: this.app!.getModelInfo() }
     }
 
+    if (this.app?.isBusy?.()) {
+      this.lastError = MODEL_BUSY
+      return { ok: false, error: MODEL_BUSY }
+    }
     if (!this.isModelLoaded()) return this.modelMissing()
     const live2d = this.app!
 

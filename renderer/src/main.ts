@@ -5,6 +5,8 @@
  */
 
 import type { Live2DApp } from './live2d-app.js'
+import type { ActiveModelResponse } from './live2d-bridge.js'
+import { sanitizeOverrides } from './model-config.js'
 import { initButtonGroup } from './button-group.js'
 import { showModelLoadError } from './boot-error.js'
 import { StatusBar } from './status-bar.js'
@@ -49,43 +51,97 @@ async function main() {
   const buttonGroup = initButtonGroup()
   new WindowControls(canvasContainer, api, buttonGroup)
 
-  // 动态导入渲染核心：untitled-pixi-live2d-engine/cubism 在缺少 live2dcubismcore.min.js 时于
-  // 模块加载期抛错（"Could not find Cubism runtime"）；静态 import 会带走整个入口，
-  // 缺模引导（FR-D3）将无从显示。Core 缺失与模型 404 两类失败都必须落入引导 UI。
+  const emptyState = document.getElementById('empty-state')
+  document.getElementById('empty-state-open')?.addEventListener('click', () => {
+    void api.openSettings()
+  })
+  const setEmpty = (visible: boolean) => {
+    if (emptyState) emptyState.hidden = !visible
+  }
+
+  // Voice and command channels attach up front: a missing model must never block them (SPEC §10.3).
+  const voice = new VoiceController(null, api, statusBar)
+  const commands = new CommandDispatcher(null, api, statusBar)
+
   let app: Live2DApp | null = null
-  try {
-    const mod = await import('./live2d-app.js')
-    app = new mod.Live2DApp()
-  } catch (e) {
-    console.error('[Main] Failed to load Live2D runtime（Cubism Core 未加载？）:', e)
-    statusBar.setModelStatus(false)
-    showModelLoadError(e)
-  }
+  let coreInjected = false
+  let bootError: unknown = null
 
-  if (app) {
-    try {
-      await app.init(canvas)
-      statusBar.setModelStatus(true)
-      console.log('[Main] Live2D app initialized')
-      // 鼠标跟随 / 点击触发动作是陪伴模式的真实功能；调试面板只在 ui-chrome 下构建
-      const mouseFollow = new MouseFollow(app, api, buttonGroup)
-      new ClickInteraction(canvas, app, statusBar, buttonGroup, api, UI_CHROME)
-      if (UI_CHROME) {
-        const { DebugPanel } = await import('./debug-panel.js')
-        new DebugPanel(app, statusBar, mouseFollow)
+  /** Inject Cubism Core on demand: it ships with the user's library, not with the app. */
+  const injectCore = (url: string) =>
+    new Promise<void>((resolve, reject) => {
+      if (coreInjected) return resolve()
+      const script = document.createElement('script')
+      script.src = url
+      script.onload = () => {
+        coreInjected = true
+        resolve()
       }
-    } catch (e) {
-      statusBar.setModelStatus(false)
-      showModelLoadError(e)
-      console.error('[Main] Failed to initialize Live2D:', e)
+      script.onerror = () => reject(new Error('Cubism Core failed to load'))
+      document.head.appendChild(script)
+    })
+
+  /** First-time runtime boot: dynamic import (the engine throws at module load without Core) + init + controllers. */
+  const ensureApp = async (coreUrl: string): Promise<Live2DApp> => {
+    if (app) return app
+    await injectCore(coreUrl)
+    const mod = await import('./live2d-app.js')
+    const created = new mod.Live2DApp()
+    await created.init(canvas)
+    const mouseFollow = new MouseFollow(created, api, buttonGroup)
+    new ClickInteraction(canvas, created, statusBar, buttonGroup, api, UI_CHROME)
+    if (UI_CHROME) {
+      const { DebugPanel } = await import('./debug-panel.js')
+      new DebugPanel(created, statusBar, mouseFollow)
     }
+    app = created
+    commands.setApp(created)
+    voice.setApp(created)
+    return created
   }
 
-  // voice 事件由 main 经 preload IPC 推送（F3/F4），表情/动作等视觉命令自 F5 起
-  // 经 main↔renderer 命令通道执行。模型缺失绝不允许阻断这两条通道的挂接
-  // （SPEC §10.3 降级要求）。
-  new VoiceController(app, api, statusBar)
-  new CommandDispatcher(app, api, statusBar)
+  let queue: Promise<unknown> = Promise.resolve()
+  /** Apply the active model (boot, hot swap, or Core just installed). Serialized. */
+  const apply = (active: ActiveModelResponse): Promise<{ ok: boolean; error?: string }> => {
+    const run = queue.then(async () => {
+      if (active.missing) {
+        // Nothing to show yet. If a model is already running keep it; otherwise the guide card.
+        if (!app?.isLoaded()) {
+          statusBar.setModelStatus(false)
+          setEmpty(true)
+        }
+        return { ok: true }
+      }
+      try {
+        const a = await ensureApp(active.coreUrl)
+        await a.loadModel(active.modelUrl, sanitizeOverrides(active.overrides))
+        bootError = null
+        setEmpty(false)
+        document.getElementById('model-load-error')?.style.removeProperty('display')
+        statusBar.setModelStatus(true)
+        voice.rebindMouth()
+        return { ok: true }
+      } catch (e) {
+        console.error('[Main] Failed to load model:', e)
+        bootError = e
+        // A failed swap keeps the previous model; only a failed first load shows the error card.
+        if (!app?.isLoaded()) {
+          statusBar.setModelStatus(false)
+          showModelLoadError(e)
+        }
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      }
+    })
+    queue = run.catch(() => {})
+    return run
+  }
+
+  api.onModelChanged(({ requestId, active }) => {
+    void apply(active).then((r) => api.reportModelLoad(requestId, r.ok, r.error))
+  })
+  void bootError
+
+  await apply(await api.getActiveModel())
 }
 
 main().catch(console.error)

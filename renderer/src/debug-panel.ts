@@ -1,4 +1,4 @@
-import { MOTION_NAMES, motionTag } from './model-config.ts'
+import { motionTag } from './model-config.ts'
 import type { Live2DApp } from './live2d-app.js'
 import type { StatusBar } from './status-bar.js'
 import type { MouseFollow } from './mouse-follow.js'
@@ -40,7 +40,7 @@ export class DebugPanel {
   }
 
   private motionLabel(group: string, index: number): string {
-    return MOTION_NAMES[`${group}:${index}`] ?? motionTag(group, index)
+    return this.app.getOverrides().motionNames[`${group}:${index}`] ?? motionTag(group, index)
   }
 
   // 展开/收起：仅 toggle 按钮触发

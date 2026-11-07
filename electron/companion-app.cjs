@@ -30,6 +30,18 @@ const { BridgeService } = require('./bridge-service.cjs')
 const { RendererCommandChannel } = require('./renderer-command-channel.cjs')
 const { VoiceListenerManager } = require('./voice-listener-manager.cjs')
 const { DEFAULT_WINDOW_STATE } = require('./window-state.cjs')
+const { mayukaHome } = require('./mayuka-paths.cjs')
+const { ModelLibrary } = require('./model-library.cjs')
+const { ModelService } = require('./model-service.cjs')
+const { OVERRIDE_SEEDS } = require('./model-override-seeds.cjs')
+const {
+  CORE_IMPORT_CHANNEL,
+  MODEL_GET_ACTIVE_CHANNEL,
+  MODEL_IMPORT_CHANNEL,
+  MODEL_LOAD_RESULT_CHANNEL,
+  MODEL_PROGRESS_CHANNEL,
+  MODEL_SAVE_THUMB_CHANNEL,
+} = require('./model-channels.cjs')
 const { SettingsStore } = require('./settings-store.cjs')
 const { buildSettingsViewModel } = require('./settings-view.cjs')
 const {
@@ -88,6 +100,7 @@ class CompanionApp {
     this._tray = null
     this._isQuitting = false
     this._settingsStore = null
+    this._models = null
     this._interactions = null
     this._commands = null
     this._voice = null
@@ -104,7 +117,7 @@ class CompanionApp {
         this._app.exit(1)
         return
       }
-      registerRendererProtocol(this._distDir)
+      registerRendererProtocol(this._distDir, { userHome: mayukaHome() })
     }
 
     // 开发模式也显示 B6；macOS 的 Dock 图标需在 app ready 后单独设置。
@@ -136,12 +149,24 @@ class CompanionApp {
     this._interactions.setWindowScale(this._settingsStore.current.window.scale, { notify: false })
     for (const warning of settingsWarnings) this._logger.warn(`[live2d] ${warning}`)
 
+    // Model library under ~/.mayuka (or MAYUKA_HOME); ModelService owns activation and hot swap.
+    this._models = new ModelService({
+      library: new ModelLibrary({ home: mayukaHome(), overrideSeeds: OVERRIDE_SEEDS }),
+      settingsStore: this._settingsStore,
+      getAvatarWindow: () => this._avatarWindow,
+      onChanged: () => this._onModelsChanged(),
+      legacy: this._devLegacyAssets(),
+      logger: this._logger,
+    })
+    this._models.reconcile()
+
     this._settingsWindows = new SettingsWindows({
       BrowserWindow: this._BrowserWindow,
       screen: this._screen,
       platform: process.platform,
       preloadPath: path.join(__dirname, 'settings-preload.cjs'),
       onFullOpened: (section) => this.notifySettingsChanged('', { focusSection: section }),
+      previewOrigin: this._isDev ? new URL(this._devServerUrl || 'http://127.0.0.1:5173/').origin : RENDERER_ORIGIN,
     })
 
     this._voice = new VoiceListenerManager({
@@ -163,13 +188,16 @@ class CompanionApp {
     if (this._voiceInjectEnabled) {
       this._logger.log('[live2d] voice 测试注入已开启（LIVE2D_VOICE_INJECT=1）：renderer 可经 window.live2d.injectVoice 注入 state/audio-level')
     }
-    // 模型路径唯一事实：renderer/src/live2d-app.ts 的 MODEL_PATH
-    this._logger.log('[live2d] 模型资源: Cubism 3/4/5 模型与 Cubism 5 SDK 的 live2dcubismcore.min.js 放入 renderer/public/（详见 README）；缺模型时窗口内显示引导而不会崩溃')
+    this._logger.log(`[live2d] Models and Cubism Core live under ${mayukaHome()} (imported from the settings window); a missing model shows the empty state, not an error page`)
 
     this._registerIpcHandlers()
     this._createTray()
     this._createAvatarWindow()
     this._voice.start(this._settingsStore.current.voiceSource)
+    {
+      const { readiness } = this._models.describe()
+      if (!readiness.core || !readiness.model) this.openWizard()
+    }
     void this._bridge.start(this._buildMcpController())
   }
 
@@ -418,6 +446,11 @@ class CompanionApp {
     return this._settingsWindows.openFull(section)
   }
 
+  /** Setup wizard: auto-opened when Core or a model is missing, also reachable from the tray. */
+  openWizard() {
+    return this._settingsWindows.openWizard()
+  }
+
   _loginItemState() {
     const supported = process.platform === 'darwin' || process.platform === 'win32'
     if (!supported) return { supported: false, openAtLogin: false }
@@ -433,6 +466,26 @@ class CompanionApp {
     return { visible: this.avatarWindowVisible(), ...state }
   }
 
+  /**
+   * Dev-only fallback so existing contributors keep working: Core / model copied into
+   * renderer/public by hand are used while nothing is installed under ~/.mayuka.
+   */
+  _devLegacyAssets() {
+    // MAYUKA_NO_LEGACY=1 disables the dev fallback so first-run flows can be exercised.
+    if (!this._isDev || process.env.MAYUKA_NO_LEGACY === '1') return null
+    const publicDir = path.join(__dirname, '..', 'renderer', 'public')
+    const coreUrl = fs.existsSync(path.join(publicDir, 'live2dcubismcore.min.js')) ? '/live2dcubismcore.min.js' : null
+    const modelUrl = fs.existsSync(path.join(publicDir, 'model', 'DeepSeek', '大肥鱼.model3.json'))
+      ? '/model/DeepSeek/大肥鱼.model3.json'
+      : null
+    return coreUrl || modelUrl ? { coreUrl, modelUrl } : null
+  }
+
+  _onModelsChanged() {
+    this._refreshTrayMenu()
+    this.notifySettingsChanged()
+  }
+
   settingsViewModel(message = '') {
     return {
       ...buildSettingsViewModel({
@@ -445,6 +498,7 @@ class CompanionApp {
         loginItem: this._loginItemState(),
         settingsFilePath: this._settingsStore.filePath,
         versions: { app: this._app.getVersion(), electron: process.versions.electron ?? null },
+        library: this._models?.describe() ?? null,
       }),
       effectiveVoiceSource: { ...this._voice.config.source },
       message,
@@ -461,8 +515,30 @@ class CompanionApp {
   }
 
   /** 设置窗 action 执行（负载已由 parseSettingsAction 校验） */
-  _runSettingsAction(action) {
+  async _runSettingsAction(action) {
     switch (action.type) {
+      case 'model-activate': {
+        const result = await this._models.activate(action.id)
+        if (!result.ok) throw new Error(result.error)
+        return true
+      }
+      case 'model-preview':
+        this._settingsWindows.openModelPreview(action.id)
+        return true
+      case 'model-remove': {
+        const result = this._models.removeModel(action.id)
+        if (!result.ok) throw new Error(result.error)
+        return true
+      }
+      case 'reveal-models-dir':
+        this._shell.openPath(this._models.describe().root)
+        return true
+      case 'reveal-core': {
+        const core = this._models.describe().core
+        if (core.installed) this._shell.showItemInFolder(core.path)
+        else this._shell.openPath(this._models.describe().root)
+        return true
+      }
       case 'avatar-show':
         this.showAvatarWindow()
         return true
@@ -476,6 +552,9 @@ class CompanionApp {
         return this.setAvatarScale(action.scale)
       case 'open-full':
         this.openSettingsWindow(action.section)
+        return true
+      case 'open-wizard':
+        this.openWizard()
         return true
       case 'close-popover':
         this._settingsWindows.hidePopover()
@@ -531,11 +610,28 @@ class CompanionApp {
         hideAvatar: () => this.hideAvatarWindow(),
         resetAvatar: () => this.resetAvatarWindow(),
         openSettings: () => this.openSettingsWindow(),
+        activateModel: (id) => {
+          void this._models.activate(id).then((r) => {
+            if (!r.ok) this._logger.warn?.(`[live2d] tray model switch failed: ${r.error}`)
+          })
+        },
+        openWizard: () => this.openWizard?.(),
         togglePopover: (bounds) => this._settingsWindows.togglePopover(bounds),
         quitApp: () => this.quit(),
       },
     })
+    this._refreshTrayMenu()
     return this._tray
+  }
+
+  _refreshTrayMenu() {
+    if (!this._tray || this._tray.isDestroyed() || !this._models) return
+    const lib = this._models.describe()
+    this._tray.rebuildMenu({
+      models: lib.models.map((m) => ({ id: m.id, name: m.name })),
+      activeId: lib.activeId,
+      ready: lib.readiness.core && lib.readiness.model,
+    })
   }
 
   // ------------------------------------------------------------ IPC 注册
@@ -583,15 +679,42 @@ class CompanionApp {
       return true
     })
 
-    this._ipcMain.handle(SETTINGS_ACTION_CHANNEL, (event, payload) => {
+    this._ipcMain.handle(SETTINGS_ACTION_CHANNEL, async (event, payload) => {
       if (!this._settingsWindows.isSender(event)) {
         return { ok: false, error: 'settings IPC sender 非法' }
       }
       try {
-        return { ok: true, result: this._runSettingsAction(parseSettingsAction(payload)) }
+        return { ok: true, result: await this._runSettingsAction(parseSettingsAction(payload)) }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
       }
+    })
+
+    // Avatar renderer: what to boot with, and the outcome of a hot swap request.
+    const isAvatarSender = (event) => Boolean(this._avatarWindow && !this._avatarWindow.isDestroyed() && event.sender === this._avatarWindow.webContents)
+    this._ipcMain.handle(MODEL_GET_ACTIVE_CHANNEL, (event) => {
+      if (!isAvatarSender(event)) throw new Error('model IPC sender is not the avatar window')
+      return this._models.getActiveModel()
+    })
+    this._ipcMain.handle(MODEL_LOAD_RESULT_CHANNEL, (event, payload) => {
+      if (!isAvatarSender(event)) return { ok: false }
+      return this._models.handleLoadResult(payload)
+    })
+
+    // Settings windows: imports (paths come from webUtils.getPathForFile in the preload) and thumbnails.
+    this._ipcMain.handle(MODEL_IMPORT_CHANNEL, (event, filePath) => {
+      if (!this._settingsWindows.isSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
+      return this._models.importModel(filePath, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send(MODEL_PROGRESS_CHANNEL, progress)
+      })
+    })
+    this._ipcMain.handle(CORE_IMPORT_CHANNEL, (event, filePath) => {
+      if (!this._settingsWindows.isSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
+      return this._models.importCore(filePath)
+    })
+    this._ipcMain.handle(MODEL_SAVE_THUMB_CHANNEL, (event, payload) => {
+      if (!this._settingsWindows.isSender(event)) return { ok: false, error: 'settings IPC sender 非法' }
+      return this._models.saveThumbnail(payload?.id, payload?.png instanceof ArrayBuffer ? Buffer.from(payload.png) : null)
     })
 
     // F3 测试注入回环：renderer 调 window.live2d.injectVoice → 本监听 → 规范化 →

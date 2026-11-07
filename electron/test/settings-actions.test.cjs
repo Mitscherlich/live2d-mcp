@@ -57,9 +57,15 @@ test('白名单与 docs/specs/settings-ui.md §4.2 一致', () => {
     'avatar-show',
     'close-popover',
     'fit-popover',
+    'model-activate',
+    'model-preview',
+    'model-remove',
     'open-full',
     'open-permission-settings',
+    'open-wizard',
     'quit',
+    'reveal-core',
+    'reveal-models-dir',
     'reveal-settings-file',
     'set-login-item',
     'set-scale',
@@ -71,4 +77,16 @@ test('复制类型缺省 codex，非法值抛错', () => {
   assert.equal(parseCopyKind('claude'), 'claude')
   assert.equal(parseCopyKind('url'), 'url')
   assert.throws(() => parseCopyKind('rm -rf'), TypeError)
+})
+
+test('model actions require a valid slug id; model is a valid section', () => {
+  assert.deepEqual(parseSettingsAction({ type: 'model-activate', id: 'hiyori-3fa9', extra: 1 }), { type: 'model-activate', id: 'hiyori-3fa9' })
+  assert.deepEqual(parseSettingsAction({ type: 'model-remove', id: 'a_b-1' }), { type: 'model-remove', id: 'a_b-1' })
+  assert.deepEqual(parseSettingsAction({ type: 'model-preview', id: 'a_b-1' }), { type: 'model-preview', id: 'a_b-1' })
+  assert.throws(() => parseSettingsAction({ type: 'model-preview', id: '../x' }), TypeError)
+  for (const id of [undefined, '', '../x', 'A', 'a b', 5, 'x'.repeat(81)]) {
+    assert.throws(() => parseSettingsAction({ type: 'model-activate', id }), TypeError)
+  }
+  assert.deepEqual(parseSettingsAction({ type: 'open-full', section: 'model' }), { type: 'open-full', section: 'model' })
+  assert.deepEqual(parseSettingsAction({ type: 'open-wizard' }), { type: 'open-wizard' })
 })

@@ -63,3 +63,36 @@ test('resolveDistFile: 非法 URL 编码被拒绝', () => {
 test('resolveDistFile: 多重前导斜杠归一为 dist 内相对路径', () => {
   assert.equal(resolveDistFile(DIST, '//assets/a.js'), path.join(DIST, 'assets/a.js'))
 })
+
+test('resolveUserAsset: models and core map into the Mayuka home', () => {
+  const { resolveUserAsset } = require('../user-assets.cjs')
+  const HOME = path.resolve('/tmp/mayuka-home')
+  assert.equal(resolveUserAsset(HOME, '/user-models/hiyori-3fa9/motion/a.json'), path.join(HOME, 'models/hiyori-3fa9/motion/a.json'))
+  assert.equal(resolveUserAsset(HOME, '/user-models/hiyori-3fa9/%E5%A4%A7.moc3'), path.join(HOME, 'models/hiyori-3fa9/大.moc3'))
+  assert.equal(resolveUserAsset(HOME, '/user-core/live2dcubismcore.min.js'), path.join(HOME, 'core/live2dcubismcore.min.js'))
+})
+
+test('resolveUserAsset: traversal, bad ids and other core files are rejected', () => {
+  const { resolveUserAsset, isUserAssetPath } = require('../user-assets.cjs')
+  const HOME = path.resolve('/tmp/mayuka-home')
+  for (const bad of [
+    '/user-models/a/../../b/x',
+    '/user-models/a/%2e%2e/%2e%2e/b/x',
+    '/user-models/a/..%2f..%2fsettings.json',
+    '/user-models/../x/y',
+    '/user-models/%2e%2e/y',
+    '/user-models/UPPER/x',
+    '/user-models/a',
+    '/user-models/a/',
+    '/user-models//x',
+    '/user-models/a/x\\y',
+    '/user-models/a/%00',
+    '/user-models/%E0%A4%A/x',
+    '/user-core/other.js',
+    '/user-core/../settings.json',
+    '/user-core/',
+  ]) assert.equal(resolveUserAsset(HOME, bad), null, bad)
+  assert.equal(isUserAssetPath('/user-models/x'), true)
+  assert.equal(isUserAssetPath('/user-core'), true)
+  assert.equal(isUserAssetPath('/assets/user-models/x'), false)
+})

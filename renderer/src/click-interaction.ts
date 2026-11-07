@@ -1,5 +1,5 @@
 import { clientPointToCanvas, isModifierPressed } from './desktop-interactions.js'
-import { HIT_AREA_MOTIONS, motionTag } from './model-config.ts'
+import { motionTag } from './model-config.ts'
 import type { Live2DApp } from './live2d-app.js'
 import type { Live2dApi } from './live2d-bridge.js'
 import type { ButtonGroupController } from './button-group.js'
@@ -38,9 +38,10 @@ export class ClickInteraction {
       }
 
       let group = 'Tap'
+      const hitMotions = app.getOverrides().hitAreaMotions
       for (const area of hitAreas) {
-        if (HIT_AREA_MOTIONS[area]) {
-          group = HIT_AREA_MOTIONS[area]
+        if (hitMotions[area]) {
+          group = hitMotions[area]
           break
         }
       }

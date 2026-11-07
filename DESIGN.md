@@ -1,15 +1,15 @@
 # Mayuka Design
 
-Design language, interface design, wireframes and user flows for the settings surfaces (tray popover + full settings window). Technical detail lives in [`docs/specs/settings-ui.md`](docs/specs/settings-ui.md).
+Design language, interface design, wireframes and user flows for the settings surfaces (full settings, first-run wizard, model preview and tray popover). Technical detail lives in [`docs/specs/settings-ui.md`](docs/specs/settings-ui.md).
 
-> Status: finalized. Derived from options B (status console) and D (tray popover) in `.temp/artifacts/settings/`.
-> Scope: tray, popover and settings window. The avatar window is out of scope.
+> Status: finalized. Approved references: `.temp/design3/01-model-light.png` through `05-preview-light.png` and `.temp/design3/demo/`, using magpie's visual language.
+> Scope: tray popover, full settings, first-run wizard and model preview. The avatar window is out of scope.
 
 ## 1. Goals
 
-1. Clicking the tray icon opens a **quick popover** (option D) for frequent actions: check runtime status, switch the voice source, scale the character, show / hide / reset the avatar window, copy the MCP command.
-2. "More settings…" in the popover opens the **full settings window** (option B): a persistent status bar on top, an anchored table of contents beside one long scrolling page, and a live level meter next to the voice source.
-3. Both windows look and behave as one product surface.
+1. Clicking the tray icon opens a **quick popover** for frequent actions: check runtime status, switch the voice source, scale the character, show / hide / reset the avatar window, copy the MCP command.
+2. "More settings…" in the popover opens the **full settings window**: a persistent status bar on top, an anchored table of contents beside one long scrolling page, and a live level meter next to the voice source.
+3. All four settings windows use the same palette, grouped rows, controls and light / dark appearance.
 
 Non-goals:
 
@@ -24,17 +24,37 @@ Non-goals:
 - **Frequent actions in the popover, everything else one click away.** Anything the popover cannot finish hands off to the full window at the right section.
 - **Quiet chrome.** System fonts, flat surfaces, no decoration beyond status lights and the level meter.
 
-### 2.2 Popover (follows system light / dark)
+### 2.2 Shared palette and controls
 
-- System font. On macOS the window uses native popover vibrancy over a translucent background.
-- Colors: selection blue `#0a6cff` (dark `#3d8bff`); card white (dark `#323238`); ok `#1f9a48` (dark `#4cd07d`); warn `#b26a00` (dark `#f0a640`).
-- Radii: window 12, card 10, segmented control 7.
+All four windows follow the system light / dark appearance. Use system UI fonts, with monospace only for commands, paths and runtime values.
 
-### 2.3 Full settings window (fixed dark)
+| Token | Light | Dark |
+|---|---|---|
+| Canvas | `#f4f4f6` | `#1a1a1e` |
+| Grouped card | `#ffffff` | `#232327` |
+| Secondary surface | `#f9f9fb` | `#1f1f23` |
+| Control / hover | `#f1f1f4` / `#e9e9ee` | `#2d2d33` / `#36363d` |
+| Divider / inner divider | `#e3e3e8` / `#ececf0` | `#333339` / `#2c2c32` |
+| Text / secondary text | `#1c1c21` / `#4b4b53` | `#ededf1` / `#b9b9c1` |
+| Muted text | `#85858d` | `#8b8b94` |
+| Accent / soft accent | `#4f46e5` / `#eeedfd` | `#a5b4fc` / `#2b2c47` |
+| Sidebar selection | `#e7e7ec` | `#2d2d33` |
+| Success / warning / error | `#189a58` / `#b45309` / `#d64545` | `#6fd99b` / `#f2b544` / `#f28b82` |
 
-- Background `#0d1117`, panel `#121821`, divider `#232c3a`, accent `#7d93ff`, ok `#3fd07f`, warn `#f2b33d`, error `#ff6b6b`.
-- Monospace (`ui-monospace, SF Mono, Menlo`) for keys, commands, ports and logs.
-- Status light: 8 px dot with a 3 px halo of the same color at 20% opacity.
+- Cards have 12 px corners, controls 7 px, model tiles 8 px. Cards use a quiet hairline rather than a raised shadow.
+- Rows place the name and supporting text on the left and controls on the right, with fine inner dividers. Normal rows are at least 48 px high; general rows are 60 px.
+- Segmented controls use a grey track and a neutral selected thumb. Reserve the accent for primary actions, enabled switches and the selected model tile.
+- Status lights are 7 px dots, always paired with text. Buttons have hover / pressed feedback; keyboard focus uses a visible 2 px accent ring. Reduced motion removes transitions and smooth scrolling.
+- The macOS popover keeps native vibrancy behind a translucent canvas. Other windows use an opaque canvas.
+
+### 2.3 Full settings layout
+
+- A 188 px sidebar contains a simple **Mayuka** title, six navigation items with a grey selected pill, and the **仅在本机运行** footer. At the minimum width the sidebar narrows to 150 px.
+- A quiet top title and a single divided status strip stay visible above the content: **BRIDGE / LISTENER / PERMISSION**. They share the canvas rather than appearing as separate cards.
+- Content has 27 px side margins and 19 px section headings above grouped cards. Navigation keeps the existing anchored, single scrolling page.
+- The model library groups its heading, real thumbnail grid and selected-model detail row in one card. A second card combines import and storage-path rows. The active-model badge and selected-tile outline express different states.
+- General settings have **启动** and **运行组件** group labels, a login switch, and a two-row Core card with installation controls and its storage path.
+- No settings search, model list-view toggle, or extra wizard / preview shortcuts on General. Only implemented controls belong in the interface.
 
 ### 2.4 Status copy
 
@@ -78,25 +98,66 @@ The application UI is in Chinese; the strings below are the shipped copy.
 ### 3.2 Full settings window (860×640, min 720×520)
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ ● bridge 127.0.0.1:47832   ● listener running   ● permission│  persistent status bar
-├───────────────┬────────────────────────────────────────────┤
-│ Voice source  │ [Auto] [App] [Custom] [External]  mode cards│
-│ MCP           │ source fields for the selected mode         │
-│ Avatar        │ ▁▂▃▅▆▇▅▃▂▁  level      12:01 running        │
-│ General       │                         12:00 starting      │
-│ Diagnostics   │                         [Save and apply]    │
-│               ├────────────────────────────────────────────┤
-│               │ MCP: [Codex | Claude Code | URL]            │
-│               │ $ codex mcp add live2d --url …      [Copy]  │
-│               ├────────────────────────────────────────────┤
-│               │ Avatar: scale ──●── · bounds · Show · Reset │
-│               ├────────────────────────────────────────────┤
-│               │ General: ☐ Launch at login                  │
-│               ├────────────────────────────────────────────┤
-│               │ Diagnostics: settings.json path · versions  │
-└───────────────┴────────────────────────────────────────────┘
+┌──────────────────┬──────────────────────────────────────────┐
+│ native controls  │ Settings                                 │
+│ Mayuka           ├──────────────────────────────────────────┤
+│                  │ BRIDGE       LISTENER       PERMISSION   │
+│ Voice source     ├──────────────────────────────────────────┤
+│ MCP connection   │ Model library                            │
+│ [Model library]  │ Hint: double-click a model to preview     │
+│ Avatar           │ ┌──────────────────────────────────────┐ │
+│ General          │ │ Library · count                      │ │
+│ Diagnostics      │ │ [thumbnail] [thumbnail] [thumbnail]  │ │
+│                  │ │ Name · size/counts  Preview Use Delete│ │
+│                  │ └──────────────────────────────────────┘ │
+│                  │ ┌──────────────────────────────────────┐ │
+│                  │ │ Import model             Choose file │ │
+│                  │ │ Storage path                  Reveal │ │
+│ Local only       │ └──────────────────────────────────────┘ │
+└──────────────────┴──────────────────────────────────────────┘
 ```
+
+Each navigation item anchors the same scrolling page. Voice, MCP, Avatar and Diagnostics use the same grouped-row grammar. General places its startup and runtime groups under separate muted labels.
+
+### 3.3 First-run wizard (520×460)
+
+```
+┌──────────────────────────────────────────────┐
+│                 Set up Mayuka                │
+├──────────────────────────────────────────────┤
+│    Welcome ── [2 Core] ── Model ── Done       │
+│ ┌──────────────────────────────────────────┐ │
+│ │ [component icon] Install Cubism Core      │ │
+│ │ File-selection guidance                  │ │
+│ ├──────────────────────────────────────────┤ │
+│ │ Filename · installation state      Choose│ │
+│ └──────────────────────────────────────────┘ │
+├──────────────────────────────────────────────┤
+│ Back                         Later    Next   │
+└──────────────────────────────────────────────┘
+```
+
+A centered title, numbered progress steps and one white card keep the small window legible. The footer stays fixed; long messages scroll inside the body. Welcome and completion share the same card treatment.
+
+### 3.4 Model preview (900×620, min 720×480)
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                    Model · preview                 Metadata│
+├───────────────────────────────────────┬────────────────────┤
+│ [− 100% +]       Background [choices] │ Motions            │
+│                                       │ [grouped rows]     │
+│                                       │ Expressions  Reset │
+│             Model stage               │ [expression rows]  │
+│                                       │ Parts     Show all │
+│                                       │ [filter]           │
+│ Scroll to zoom                        │ [checkbox rows]    │
+├───────────────────────────────────────┴────────────────────┤
+│ Preview only                              Use model Delete│
+└────────────────────────────────────────────────────────────┘
+```
+
+The inspector is 278 px wide (245 px in a narrow window) and scrolls independently. Background and zoom controls sit over the stage; the footer remains visible. Preserve the real white / dark / checker options and the per-motion, per-expression and per-part controls rather than the demo's abbreviated lists or expression dropdown. The initial dark stage remains selected.
 
 ## 4. User flows
 
@@ -131,15 +192,25 @@ Context menu items: Show avatar, Hide avatar, Reset window position, Open settin
 - macOS uses an inset title bar with a draggable custom header; other platforms use the system title bar.
 - Status bar (always visible): **bridge** (listening or not, with `127.0.0.1:<port>`), **listener** (status, mode and detail), **permission** (derived from listener status; shows "去开启" when action is needed).
 - Sections:
-  1. **Voice source**: four mode cards; fields depend on mode (`process_pattern`, or `source_id` / `source_name`); live level graph and readout; last six listener status changes this session; save and apply; a notice when an environment variable overrides the setting.
+  1. **Voice source**: four segmented mode choices; fields depend on mode (`process_pattern`, or `source_id` / `source_name`); live level graph and readout; last six listener status changes this session; save and apply; a notice when an environment variable overrides the setting.
   2. **MCP connection**: Codex / Claude Code / URL tabs, one command with a copy button, port note.
-  3. **Avatar**: scale slider, current bounds, show / hide, reset position.
-  4. **General**: launch at login (macOS and Windows only).
-  5. **Diagnostics**: `settings.json` path (reveal in file manager), app and Electron versions.
+  3. **Model library**: thumbnail grid, selected-model detail row, import and storage-path card; preview opens in its own window.
+  4. **Avatar**: scale slider, current bounds, show / hide, reset position.
+  5. **General**: startup group with launch at login (macOS and Windows only), and runtime group with Cubism Core status, upload / replace and storage path.
+  6. **Diagnostics**: `settings.json` path (reveal in file manager), app and Electron versions.
 - Can be opened directly at a given section, for example from the popover.
+
+### 4.5 Model management
+
+Details: `docs/specs/model-management.md`.
+
+- **Settings, "角色模型"**: a hint line ("双击模型卡片…"), a grouped library card (thumbnail grid, names and "当前" badges), an import / storage two-row card with progress, and a detail row below the grid with the selected model's info, "放大预览", "设为当前" and "删除" (disabled for the active model). The settings window has no inline preview. Double-clicking a card (or "放大预览") opens a standalone preview window (900x620, resizable): a large stage on the left and an inspector on the right (background white / dark / checker, zoom buttons and mouse wheel, motions grouped and played per file, expressions with reset, filterable part checkboxes), with "设为当前" and "删除" in its footer. Card thumbnails are captured automatically; a card shows a placeholder (⚠ plus the reason on failure) until then. A warning banner appears when Cubism Core is missing and links to "通用".
+- **Settings, "通用"**: a Cubism Core row (status, upload / replace, reveal). Core is a runtime dependency, not a character asset, so it is not on the model page.
+- **Popover**: a "角色模型" box under the header with a dropdown of models; the last entry opens the full window at the model section. The tray context menu has a "切换模型" radio submenu (the only switcher on Linux) and shows "设置向导…" while Core or a model is missing.
+- **Wizard**: 欢迎 → Core → 模型 → 完成. Core and model can each be skipped ("稍后"); "完成" stays disabled until both exist. Opens automatically at startup when either is missing.
+- **Avatar empty state**: a small card ("还没有角色", "去设置") replaces the red error page when nothing is installed; the error page is only for real load failures.
 
 ## 5. Later
 
 - Running-application picker for application mode.
 - Click-through lock toggle.
-- Light theme for the full window.

@@ -21,7 +21,7 @@ test('托盘菜单将显示、隐藏、设置与退出动作接到对应回调',
     quitApp: () => calls.push('quit'),
   })
 
-  const actionable = template.filter((item) => item.type !== 'separator')
+  const actionable = template.filter((item) => item.type !== 'separator' && !item.submenu)
   assert.deepEqual(actionable.map((item) => item.label), [
     '显示角色窗',
     '隐藏角色窗',
@@ -132,6 +132,26 @@ test('linux：沿用 setContextMenu，click 直达完整设置', () => {
   assert.equal(events.has('right-click'), false)
   events.get('click')()
   assert.deepEqual(calls, [['settings']])
+})
+
+test('tray menu: model submenu lists radio items; wizard entry only when not ready', () => {
+  const picked = []
+  const actions = { showAvatar() {}, hideAvatar() {}, openSettings() {}, quitApp() {}, openWizard() {}, activateModel: (id) => picked.push(id) }
+  const withModels = buildTrayMenuTemplate(actions, { models: [{ id: 'a-1', name: 'A' }, { id: 'b-2', name: 'B' }], activeId: 'b-2', ready: true })
+  const sub = withModels.find((i) => i.label === '切换模型').submenu
+  assert.deepEqual(sub.map((i) => [i.label, i.checked]), [['A', false], ['B', true]])
+  sub[0].click()
+  assert.deepEqual(picked, ['a-1'])
+  assert.equal(withModels.some((i) => i.label === '设置向导…'), false)
+  const empty = buildTrayMenuTemplate(actions, { models: [], ready: false })
+  assert.equal(empty.find((i) => i.label === '切换模型').submenu[0].enabled, false)
+  assert.equal(empty.some((i) => i.label === '设置向导…'), true)
+})
+
+test('rebuildMenu swaps the menu; linux re-applies setContextMenu', () => {
+  const { controller, rawTray } = createTrayHarness('linux')
+  controller.rebuildMenu({ models: [{ id: 'a-1', name: 'A' }], activeId: 'a-1', ready: true })
+  assert.equal(rawTray.contextMenu.template.find((i) => i.label === '切换模型').submenu[0].checked, true)
 })
 
 test('trayClickSupported 只对 darwin / win32 为真', () => {

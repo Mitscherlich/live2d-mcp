@@ -22,8 +22,8 @@ Built with Electron, PixiJS, and Live2D Cubism. Native application-audio capture
     <th width="32%">Tray quick controls</th>
   </tr>
   <tr>
-    <td valign="top"><img src="./docs/assets/demo-settings.png" alt="Running Mayuka settings: live bridge and audio status, voice sources, MCP connection, and character controls" width="100%"></td>
-    <td valign="top"><img src="./docs/assets/demo-tray.png" alt="Running Mayuka tray panel: show or hide the character, reset position, copy MCP, choose a voice source, and adjust scale" width="100%"></td>
+    <td valign="top"><img src="./docs/assets/demo-settings.png" alt="Mayuka settings in light mode: Chinese model library with the active character preview, import controls, and green runtime status" width="100%"></td>
+    <td valign="top"><img src="./docs/assets/demo-tray.png" alt="Mayuka tray quick controls in light mode: Chinese model selector, character visibility, reset position, MCP shortcut, voice source, and scale" width="100%"></td>
   </tr>
 </table>
 
@@ -50,23 +50,14 @@ bun install
 
 ### 2. Add Cubism Core and a model
 
-Cubism Core and character assets are not included in the repository. Obtain them separately and place them under `renderer/public/`.
+Cubism Core and character models are not included in the repository. Start Mayuka and the setup wizard opens on first run (also available from the tray menu → 设置向导…):
 
-1. Get `Core/live2dcubismcore.min.js` from the [Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) and copy it to `renderer/public/`.
-2. Add a Cubism 3, 4, or 5 model, including its `.moc3`, textures, motions, expressions, and other referenced files. The default loader expects the DeepSeek “大肥鱼” model at the path below.
+1. Choose `Core/live2dcubismcore.min.js` (or the whole SDK `.zip`) from the [Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/).
+2. Choose a model `.zip` containing a `.model3.json`, its `.moc3`, textures, motions and expressions (Cubism 3, 4 or 5).
 
-```text
-renderer/public/
-├── live2dcubismcore.min.js
-└── model/
-    └── DeepSeek/
-        ├── 大肥鱼.model3.json
-        └── …
-```
+Both are stored under `~/.mayuka/` (`core/`, `models/`; set `MAYUKA_HOME` to relocate). More models can be imported, previewed and switched later in Settings → 角色模型, or from the tray.
 
 Use **Core 5.x from Cubism 5 SDK 5-r.4 or earlier**. The current renderer uses `untitled-pixi-live2d-engine` with PixiJS v8 and Cubism 5 Framework; Core 6.x from SDK 5-r.5 onward is not compatible with this integration.
-
-To use a different model, update `MODEL_PATH` in [`renderer/src/live2d-app.ts`](renderer/src/live2d-app.ts) and the parameter mappings in [`renderer/src/model-config.ts`](renderer/src/model-config.ts). Missing assets produce setup guidance in the character window.
 
 ### 3. Launch Mayuka
 

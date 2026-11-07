@@ -39,6 +39,10 @@ export interface Live2dWindowBounds {
   height: number
 }
 
+export type ActiveModelResponse =
+  | { missing: 'core' | 'model' }
+  | { missing?: undefined; id: string | null; name: string; coreUrl: string; modelUrl: string; overrides: unknown }
+
 export interface Live2dBridgeApi {
   isElectron: true
   platform: string
@@ -62,6 +66,11 @@ export interface Live2dBridgeApi {
   onGlobalMouseMove: (
     callback: (x: number, y: number, bounds: Live2dWindowBounds | null) => void,
   ) => () => void
+  /** Active model + Cubism Core URLs, or `{ missing }` when Core / a model is not installed yet */
+  getActiveModel: () => Promise<ActiveModelResponse>
+  /** main asks the avatar to (re)load the active model; answer with reportModelLoad */
+  onModelChanged: (callback: (payload: { requestId: number; active: ActiveModelResponse }) => void) => () => void
+  reportModelLoad: (requestId: number, ok: boolean, error?: string) => Promise<{ ok: boolean }>
   /** 订阅 main 权威钳制后的模型缩放值 */
   onSetScale: (callback: (scale: number) => void) => () => void
   /** 订阅 main 推送的规范化 voice 事件（state / audio-level）；返回取消订阅函数 */

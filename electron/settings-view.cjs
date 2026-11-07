@@ -54,6 +54,7 @@ function buildSettingsViewModel({
   loginItem = null,
   settingsFilePath = null,
   versions = null,
+  library = null,
 } = {}) {
   const port = displayedPort({ actualPort, environment })
   const mcpUrl = mcpHttpUrl(port)
@@ -71,6 +72,8 @@ function buildSettingsViewModel({
     loginItem: loginItem ? { ...loginItem } : { supported: false, openAtLogin: false },
     settingsFilePath,
     versions: versions ? { ...versions } : null,
+    // Model library slice (ModelService.describe()): { root, core, activeId, readiness, models[] }
+    library: library ?? { root: null, core: { installed: false }, activeId: null, readiness: { core: false, model: false }, models: [] },
   }
 }
 

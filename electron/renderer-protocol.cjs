@@ -16,6 +16,7 @@
 
 const path = require('node:path')
 const fs = require('node:fs/promises')
+const { isUserAssetPath, resolveUserAsset } = require('./user-assets.cjs')
 
 const RENDERER_SCHEME = 'live2d-app'
 const RENDERER_HOST = 'root'
@@ -72,7 +73,7 @@ function resolveDistFile(distDir, urlPath) {
  * 须在 app.whenReady() 之后、loadURL 之前调用；
  * protocol.registerSchemesAsPrivileged 则必须在 ready 前由调用方完成。
  */
-function registerRendererProtocol(distDir) {
+function registerRendererProtocol(distDir, { userHome = null } = {}) {
   // 延迟 require：保持本模块在纯 Node（无 Electron）下可被单测加载
   const { protocol } = require('electron')
 
@@ -86,7 +87,10 @@ function registerRendererProtocol(distDir) {
     if (url.host !== RENDERER_HOST) {
       return new Response('Not found', { status: 404 })
     }
-    const filePath = resolveDistFile(distDir, url.pathname)
+    // User-supplied assets (~/.mayuka) live outside distDir; never fall through to dist for them.
+    const filePath = isUserAssetPath(url.pathname)
+      ? (userHome ? resolveUserAsset(userHome, url.pathname) : null)
+      : resolveDistFile(distDir, url.pathname)
     if (!filePath) {
       return new Response('Forbidden', { status: 403 })
     }

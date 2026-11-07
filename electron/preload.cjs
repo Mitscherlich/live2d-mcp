@@ -41,6 +41,10 @@ const GLOBAL_MOUSE_MOVE_CHANNEL = 'live2d:global-mouse-move'
 const SET_SCALE_EVENT_CHANNEL = 'live2d:set-scale'
 const SET_MOUSE_IGNORE_CHANNEL = 'live2d:set-mouse-ignore'
 const OPEN_SETTINGS_CHANNEL = 'live2d:open-settings'
+// Model management (mirrors electron/model-channels.cjs; guarded by electron/test/model-channels.test.cjs)
+const MODEL_GET_ACTIVE_CHANNEL = 'live2d:model:get-active'
+const MODEL_CHANGED_CHANNEL = 'live2d:model:changed'
+const MODEL_LOAD_RESULT_CHANNEL = 'live2d:model:load-result'
 const COMMAND_TYPES = new Set([
   'getModelInfo',
   'setExpression',
@@ -155,6 +159,31 @@ const api = {
     }
     ipcRenderer.on(SET_SCALE_EVENT_CHANNEL, listener)
     return () => ipcRenderer.removeListener(SET_SCALE_EVENT_CHANNEL, listener)
+  },
+
+  /** Active model + Cubism Core URLs, or `{ missing: 'core' | 'model' }`. */
+  getActiveModel() {
+    return ipcRenderer.invoke(MODEL_GET_ACTIVE_CHANNEL)
+  },
+
+  /** main asks the avatar to (re)load the active model; reply with reportModelLoad(requestId, ...). */
+  onModelChanged(callback) {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_event, payload) => {
+      if (!isPlainObject(payload) || !Number.isInteger(payload.requestId) || !isPlainObject(payload.active)) return
+      callback(payload)
+    }
+    ipcRenderer.on(MODEL_CHANGED_CHANNEL, listener)
+    return () => ipcRenderer.removeListener(MODEL_CHANGED_CHANNEL, listener)
+  },
+
+  reportModelLoad(requestId, ok, error) {
+    if (!Number.isInteger(requestId)) return Promise.resolve({ ok: false })
+    return ipcRenderer.invoke(MODEL_LOAD_RESULT_CHANNEL, {
+      requestId,
+      ok: ok === true,
+      error: typeof error === 'string' ? error.slice(0, 200) : undefined,
+    })
   },
 
   /**

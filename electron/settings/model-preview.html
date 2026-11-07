@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src live2d-app://root http://127.0.0.1:5173" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mayuka 模型预览</title>
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./model-preview.css" />
+  </head>
+  <body>
+    <div class="win">
+      <header class="bar"><div class="preview-title"><span class="t" id="title">预览</span><span id="sub"></span></div><span class="mono dim" id="meta"></span></header>
+      <div class="main">
+        <div class="stage" id="stage" data-bg="dark">
+          <iframe id="frame" sandbox="allow-scripts allow-same-origin" title="模型预览"></iframe>
+          <div class="stage-toolbar">
+            <div class="seg zoom" aria-label="缩放"><button type="button" id="zoom-out" aria-label="缩小">−</button><button type="button" id="zoom-text" title="重置缩放">100%</button><button type="button" id="zoom-in" aria-label="放大">＋</button></div>
+            <div class="background-controls"><span>背景</span><div class="seg" id="bg" role="group" aria-label="背景"><button type="button" data-bg="white" aria-pressed="false">白</button><button type="button" data-bg="dark" class="on" aria-pressed="true">深色</button><button type="button" data-bg="checker" aria-pressed="false">棋盘</button></div></div>
+          </div>
+          <p class="stage-msg" id="stage-msg" role="status">加载中…</p>
+          <span class="stage-hint">滚轮缩放</span>
+        </div>
+        <aside class="side" aria-label="模型检查器">
+          <section class="sec"><h4>动作 <span id="motion-count"></span></h4><div class="group list" id="motions"></div></section>
+          <section class="sec"><h4>表情 <span id="expr-count"></span><button class="link" type="button" id="expr-reset">重置</button></h4><div class="group chips" id="exprs"></div></section>
+          <section class="sec"><h4>部件 <span id="part-count"></span><button class="link" type="button" id="parts-all">全部显示</button></h4><input class="input" type="search" id="part-filter" placeholder="筛选部件" aria-label="筛选部件" /><div class="group list parts" id="parts"></div></section>
+        </aside>
+      </div>
+      <footer class="act"><span class="preview-note"><span class="led ok"></span>仅预览，不影响桌面角色</span><span class="sp"></span><button class="cbtn" type="button" id="activate">设为当前</button><button class="cbtn danger" type="button" id="remove">删除</button></footer>
+    </div>
+    <script src="./model-preview.js"></script>
+  </body>
+</html>

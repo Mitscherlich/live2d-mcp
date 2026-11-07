@@ -20,7 +20,7 @@ test('设置文件不存在时读取默认 automatic 配置', () => withTempDir(
   const store = new SettingsStore({ filePath: path.join(directory, 'settings.json') })
   assert.deepEqual(store.load(), {
     settings: {
-      version: 1,
+      version: 2,
       voiceSource: {
         mode: 'automatic',
         process_pattern: null,
@@ -34,6 +34,7 @@ test('设置文件不存在时读取默认 automatic 配置', () => withTempDir(
         height: 640,
         scale: 1,
       },
+      model: { activeId: null },
     },
     warnings: [],
   })
@@ -48,7 +49,7 @@ test('设置写入复用 voice source sanitize 并可持久化读取', () => wit
 
   assert.equal(saved.voiceSource.process_pattern, 'codex|chatgpt')
   assert.deepEqual(store.load(), { settings: saved, warnings: [] })
-  assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).version, 1)
+  assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).version, 2)
 }))
 
 test('窗口状态按有限坐标、尺寸范围和缩放范围规范化', () => withTempDir((directory) => {
@@ -135,4 +136,20 @@ test('saveWindowState / saveVoiceSource 局部更新并保留其余字段', () =
   assert.equal(saved.voiceSource.mode, 'external')
   assert.deepEqual(saved.window, { x: 10, y: 20, width: 800, height: 600, scale: 1.2 })
   assert.deepEqual(store.current, saved)
+}))
+
+test('model.activeId: legal slug persists, illegal values fall back to null, old files migrate', () => withTempDir((directory) => {
+  const filePath = path.join(directory, 'settings.json')
+  const store = new SettingsStore({ filePath })
+  assert.equal(store.saveActiveModel('hiyori_pro_t11-3fa9').model.activeId, 'hiyori_pro_t11-3fa9')
+  assert.equal(store.saveVoiceSource({ mode: 'external' }).model.activeId, 'hiyori_pro_t11-3fa9')
+  assert.equal(store.saveActiveModel('../etc').model.activeId, null)
+  assert.equal(store.saveActiveModel(42).model.activeId, null)
+  assert.equal(store.saveActiveModel(null).model.activeId, null)
+
+  fs.writeFileSync(filePath, JSON.stringify({ version: 1, voiceSource: { mode: 'external' } }))
+  const loaded = store.load().settings
+  assert.equal(loaded.version, 2)
+  assert.equal(loaded.voiceSource.mode, 'external')
+  assert.deepEqual(loaded.model, { activeId: null })
 }))

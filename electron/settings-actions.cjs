@@ -14,7 +14,7 @@
 const { isFiniteNumber, isPlainObject } = require('./protocol-utils.cjs')
 
 const COPY_KINDS = Object.freeze(['codex', 'claude', 'url'])
-const SETTINGS_SECTIONS = Object.freeze(['voice', 'mcp', 'avatar', 'general', 'diag'])
+const SETTINGS_SECTIONS = Object.freeze(['voice', 'model', 'mcp', 'avatar', 'general', 'diag'])
 const POPOVER_MIN_HEIGHT = 200
 const POPOVER_MAX_HEIGHT = 640
 
@@ -25,8 +25,14 @@ const NO_ARG_ACTIONS = new Set([
   'close-popover',
   'open-permission-settings',
   'reveal-settings-file',
+  'reveal-models-dir',
+  'reveal-core',
+  'open-wizard',
   'quit',
 ])
+
+/** Same shape as mayuka-paths MODEL_ID_PATTERN (kept literal so this module stays dependency-free). */
+const MODEL_ID = /^[a-z0-9_-]{1,80}$/
 
 const SETTINGS_ACTION_TYPES = Object.freeze([
   ...NO_ARG_ACTIONS,
@@ -34,6 +40,9 @@ const SETTINGS_ACTION_TYPES = Object.freeze([
   'open-full',
   'fit-popover',
   'set-login-item',
+  'model-activate',
+  'model-remove',
+  'model-preview',
 ])
 
 /**
@@ -67,6 +76,11 @@ function parseSettingsAction(payload) {
     case 'set-login-item':
       if (typeof payload.enabled !== 'boolean') throw new TypeError('set-login-item 需要布尔 enabled')
       return { type, enabled: payload.enabled }
+    case 'model-activate':
+    case 'model-remove':
+    case 'model-preview':
+      if (typeof payload.id !== 'string' || !MODEL_ID.test(payload.id)) throw new TypeError(`${type} requires a valid model id`)
+      return { type, id: payload.id }
     default:
       throw new TypeError(`未知设置 action：${type}`)
   }

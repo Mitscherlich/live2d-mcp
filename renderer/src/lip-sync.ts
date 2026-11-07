@@ -59,6 +59,8 @@ export interface VoiceLipSync {
   getActivity: () => VoiceActivity
   /** 每帧读的标量访问器（不构造对象） */
   getLevel: () => number
+  /** Swap the mouth target after a model change (null = no-op writes). */
+  setMouthParam: (target: MouthParamTarget | null) => void
   /** 完整快照：仅调试用（__live2dVoiceDebug / 证据脚本），每次调用新建对象 */
   snapshot: () => VoiceLipSyncSnapshot
 }
@@ -67,7 +69,7 @@ export function createVoiceLipSync(options: VoiceLipSyncOptions): VoiceLipSync {
   const machine = options.machine ?? new VoiceStateMachine()
   const smoother = options.smoother ?? new LevelSmoother()
   const now = options.now ?? (() => performance.now())
-  const mouthParam = options.mouthParam
+  let mouthParam = options.mouthParam
   const writeMouth = options.writeMouth
 
   let lastMouthWrite = 0
@@ -114,5 +116,11 @@ export function createVoiceLipSync(options: VoiceLipSyncOptions): VoiceLipSync {
     }
   }
 
-  return { handleEvent, tick, getActivity, getLevel, snapshot }
+  function setMouthParam(target: MouthParamTarget | null): void {
+    mouthParam = target
+    // Force the next tick to write so the new model's mouth gets the current value.
+    lastMouthWrite = Number.NaN
+  }
+
+  return { handleEvent, tick, getActivity, getLevel, setMouthParam, snapshot }
 }

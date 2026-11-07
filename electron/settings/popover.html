@@ -8,6 +8,7 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mayuka</title>
+    <link rel="stylesheet" href="./tokens.css" />
     <link rel="stylesheet" href="./popover.css" />
   </head>
   <body>
@@ -25,6 +26,11 @@
         <button class="btn" id="grant" type="button">授权</button>
       </div>
 
+      <section class="box" id="model-box">
+        <div class="r2"><span>角色模型</span><small id="model-state"></small></div>
+        <select id="model-select" aria-label="切换角色模型"></select>
+      </section>
+
       <div class="tiles">
         <button class="tile" id="tile-avatar" type="button"><span class="g">◉</span><span id="tile-avatar-text">显示角色</span></button>
         <button class="tile" id="tile-reset" type="button"><span class="g">⤢</span>重置位置</button>
@@ -34,10 +40,10 @@
       <section class="box">
         <div class="r2"><span>口型来源</span><small id="source-text"></small></div>
         <div class="seg" id="mode-seg" role="radiogroup" aria-label="口型来源">
-          <button type="button" data-mode="automatic" role="radio">自动</button>
-          <button type="button" data-mode="application" role="radio">应用</button>
-          <button type="button" data-mode="custom" role="radio">正则</button>
-          <button type="button" data-mode="external" role="radio">外部</button>
+          <button type="button" data-mode="automatic" role="radio" aria-checked="true">自动</button>
+          <button type="button" data-mode="application" role="radio" aria-checked="false">应用</button>
+          <button type="button" data-mode="custom" role="radio" aria-checked="false">正则</button>
+          <button type="button" data-mode="external" role="radio" aria-checked="false">外部</button>
         </div>
         <div class="mm" aria-label="实时电平"><i id="level"></i></div>
         <p class="msg" id="message" role="status"></p>

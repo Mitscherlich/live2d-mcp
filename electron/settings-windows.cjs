@@ -57,6 +57,7 @@ class SettingsWindows {
    * @param {string} options.preloadPath settings-preload.cjs 绝对路径
    * @param {(section: string|null) => void} [options.onFullOpened] 完整窗显示时回调
    *   （推一份最新 view；已打开的窗口再次唤起时带 section 让页面滚动定位）
+   * @param {string|null} [options.previewOrigin] origin serving preview.html (dev server or live2d-app://root)
    * @param {() => number} [options.now] 测试注入时钟
    */
   constructor({
@@ -66,6 +67,7 @@ class SettingsWindows {
     pagesDir = path.join(__dirname, 'settings'),
     preloadPath,
     onFullOpened = () => {},
+    previewOrigin = null,
     now = Date.now,
   }) {
     this._BrowserWindow = BrowserWindow
@@ -74,10 +76,13 @@ class SettingsWindows {
     this._pagesDir = pagesDir
     this._preloadPath = preloadPath
     this._onFullOpened = onFullOpened
+    this._previewOrigin = previewOrigin
     this._now = now
 
     this._popover = null
     this._full = null
+    this._wizard = null
+    this._modelPreview = null
     this._popoverHiddenAt = -Infinity
     this._popoverHeight = POPOVER_INITIAL_HEIGHT
     this._lastTrayBounds = null
@@ -87,7 +92,7 @@ class SettingsWindows {
 
   /** IPC sender 是否属于任一设置窗 */
   isSender(event) {
-    return isWindowSender(event, this._popover) || isWindowSender(event, this._full)
+    return isWindowSender(event, this._popover) || isWindowSender(event, this._full) || isWindowSender(event, this._wizard) || isWindowSender(event, this._modelPreview)
   }
 
   _alive(win) {
@@ -246,15 +251,104 @@ class SettingsWindows {
     win.on('closed', () => {
       if (this._full === win) this._full = null
     })
-    const query = { platform: this._platform, ...(section ? { section } : {}) }
+    const query = {
+      platform: this._platform,
+      ...(section ? { section } : {}),
+      ...(this._previewOrigin ? { previewOrigin: this._previewOrigin } : {}),
+    }
     void win.loadFile(path.join(this._pagesDir, 'settings.html'), { query })
     return win
+  }
+
+  /** First-run wizard (welcome -> Core -> model -> done); a small fixed window, single instance. */
+  openWizard() {
+    this.hidePopover()
+    if (this._alive(this._wizard)) {
+      if (this._wizard.isMinimized()) this._wizard.restore()
+      this._wizard.show()
+      this._wizard.focus()
+      return this._wizard
+    }
+    const isMac = this._platform === 'darwin'
+    const win = new this._BrowserWindow({
+      width: 520,
+      height: 460,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      show: false,
+      title: 'Mayuka 设置向导',
+      icon: appIconPath(this._platform),
+      backgroundColor: FULL_BACKGROUND,
+      autoHideMenuBar: true,
+      ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 14 } } : {}),
+      webPreferences: this._webPreferences(),
+    })
+    this._wizard = win
+    this._secure(win)
+    win.once('ready-to-show', () => {
+      if (!this._alive(win)) return
+      win.show()
+      this._onFullOpened(null)
+    })
+    win.on('closed', () => {
+      if (this._wizard === win) this._wizard = null
+    })
+    void win.loadFile(path.join(this._pagesDir, 'wizard.html'), { query: { platform: this._platform } })
+    return win
+  }
+
+  /** Standalone model preview/inspector (one window; opening another model reloads it). */
+  openModelPreview(id) {
+    const query = {
+      platform: this._platform,
+      id,
+      ...(this._previewOrigin ? { previewOrigin: this._previewOrigin } : {}),
+    }
+    const file = path.join(this._pagesDir, 'model-preview.html')
+    if (this._alive(this._modelPreview)) {
+      const win = this._modelPreview
+      if (win.isMinimized()) win.restore()
+      void win.loadFile(file, { query })
+      win.show()
+      win.focus()
+      return win
+    }
+    const isMac = this._platform === 'darwin'
+    const win = new this._BrowserWindow({
+      width: 900,
+      height: 620,
+      minWidth: 720,
+      minHeight: 480,
+      show: false,
+      title: 'Mayuka 模型预览',
+      icon: appIconPath(this._platform),
+      backgroundColor: FULL_BACKGROUND,
+      autoHideMenuBar: true,
+      ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 14 } } : {}),
+      webPreferences: this._webPreferences(),
+    })
+    this._modelPreview = win
+    this._secure(win)
+    win.once('ready-to-show', () => {
+      if (this._alive(win)) win.show()
+    })
+    win.on('closed', () => {
+      if (this._modelPreview === win) this._modelPreview = null
+    })
+    void win.loadFile(file, { query })
+    return win
+  }
+
+  closeWizard() {
+    if (this._alive(this._wizard)) this._wizard.close()
   }
 
   // ------------------------------------------------------------ 广播
 
   _targets() {
-    return [this._popover, this._full].filter((win) => this._alive(win))
+    return [this._popover, this._full, this._wizard, this._modelPreview].filter((win) => this._alive(win))
   }
 
   /** 视图模型推送到两个窗口（未创建/已销毁的跳过） */
@@ -281,6 +375,8 @@ class SettingsWindows {
     for (const win of this._targets()) win.destroy()
     this._popover = null
     this._full = null
+    this._wizard = null
+    this._modelPreview = null
   }
 }
 

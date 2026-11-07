@@ -37,7 +37,7 @@ Companion to [`DESIGN.md`](../../DESIGN.md), which covers design language, wiref
 
 ### 3.3 Full window
 
-- 860×640, minimum 720×520, fixed dark (`#0d1117`). macOS uses `titleBarStyle: 'hiddenInset'` and the page draws a draggable title bar; other platforms use the system title bar.
+- 860×640, minimum 720×520, system light / dark appearance via `prefers-color-scheme`. macOS uses `titleBarStyle: 'hiddenInset'` and the page draws a draggable title bar; other platforms use the system title bar.
 - `openFull(section)` opens and scrolls to a section.
 - Voice mode behavior: `automatic` / `external` save immediately from the popover; `application` / `custom` switch immediately when the saved fields exist, otherwise open the full window at the voice section.
 
@@ -65,7 +65,7 @@ Tray ──click──▶ SettingsWindows.togglePopover(trayBounds)
 | `electron/settings-view.cjs` | View model: Claude Code command, permission derivation, avatar state, versions, login item | `bridge-endpoint.cjs` |
 | `electron/tray.cjs` | Left-click callback receives tray bounds; right click pops up the menu | Injected |
 | `electron/companion-app.cjs` | Wiring, action execution, level interception in `dispatchVoiceEvent` | |
-| `electron/settings/` | `popover.html/js`, `settings.html` + `settings-renderer.js`, `shared.js` (copy and formatting), `popover.css`, `settings.css` | |
+| `electron/settings/` | Four HTML pages with page-specific CSS and scripts, `shared.js` (copy and formatting), and `tokens.css` (shared palette, base styles and controls) | |
 
 Pure computation lives in functions that `node:test` can call directly: `computePopoverPosition`, `parseSettingsAction`, `derivePermission`, `buildSettingsViewModel`.
 
@@ -91,6 +91,11 @@ Action allowlist:
 | `fit-popover` | `height: number` | Resize the popover to its content |
 | `open-permission-settings` | none | Open the system "Screen & System Audio Recording" page (darwin only) |
 | `reveal-settings-file` | none | Reveal `settings.json` in the file manager |
+| `reveal-models-dir` | none | Open the models directory |
+| `reveal-core` | none | Reveal the installed Cubism Core (or the home directory when missing) |
+| `open-wizard` | none | Open the first-run wizard |
+| `model-activate` | `id` | Hot-swap the active model (see `model-management.md`) |
+| `model-remove` | `id` | Delete a non-active model |
 | `set-login-item` | `enabled: boolean` | `app.setLoginItemSettings` (darwin / win32 only) |
 | `quit` | none | Quit the app |
 
@@ -126,7 +131,19 @@ Permission derivation: `permission-denied` → `denied`; `running` or `idle` →
 
 ### 4.5 CSP
 
-Both pages use `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:`. Styles are separate css files next to the pages; no inline styles.
+All four pages keep `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:`. Each loads `tokens.css` followed by its own stylesheet using local `<link>` elements, which `style-src 'self'` permits. There are no external requests or inline script / style blocks. Settings and model preview additionally retain `frame-src live2d-app://root http://127.0.0.1:5173` for the existing preview / thumbnail frames. Runtime meter dimensions and thumbnail backgrounds continue to be assigned through DOM style properties.
+
+
+### 4.6 Page structure and shared styling
+
+- `tokens.css` owns light / dark custom properties, typography, radii, base controls, focus-visible rings and reduced-motion rules. The four page stylesheets own their layout; none imports another page's stylesheet.
+- `settings.html` uses a three-row grid (title, status, scroll area), with the sidebar spanning the rows. `#content` remains the only scrolling content container and `#toc a` retains its six anchor targets: `voice`, `mcp`, `model`, `avatar`, `general`, `diag`.
+- Existing action / form ids remain intact. New presentation ids are `model-count`, `model-empty`, `model-pick`, `models-path`, `core-status`, `core-led`, `core-path`, and the six section heading ids. The import file input sits outside `#dropzone`; `#model-pick` opens that same input. The model drawer is now a detail row inside the library card, with its existing close action retained.
+- Model buttons keep `aria-current` for the active model, add `aria-pressed` for the selected detail row, and render a separate current-model badge. Counts and storage paths come from the existing library view (`root`, `core.path`, `models`); no new IPC or view-model fields are required. TOC selection also updates `aria-current="location"`.
+- `wizard.html` loads only `tokens.css` and `wizard.css`, using its own title bar, progress list, card body and footer. Existing `data-pane` / `data-step` hooks and navigation / import ids remain; the script updates progress-number decoration and `aria-current="step"`. Window dimensions and readiness rules are unchanged.
+- `model-preview.html` moves `#bg` and the zoom controls to the stage toolbar and `#meta` to the title bar. Motion, expression and part containers keep their ids and data. The initial dark stage, white / dark / checker values and all postMessage payloads are unchanged; background buttons expose `aria-pressed`.
+- `popover.css` uses the shared tokens while keeping transparent document backgrounds and a translucent macOS canvas so native vibrancy remains visible. Its DOM actions, resize reporting and mode-switch behavior are unchanged.
+- The native `BrowserWindow` background colors remain unchanged by this presentation refactor; the loaded pages paint their own themed backgrounds.
 
 ## 5. Tests
 

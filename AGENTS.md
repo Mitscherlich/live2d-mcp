@@ -8,6 +8,8 @@ Mayuka (repo name: live2d-mcp) is a desktop floating character built with Electr
 
 Product boundary (SPEC §9): the app does not speak, does no TTS, and does not capture the microphone. Do not add `speak` or `lip_sync*` tools.
 
+Model management (library, hot swap, preview page `renderer/preview.html`, `live2d:model:*` channels in `model-channels.cjs`): `docs/specs/model-management.md`.
+
 Docs: `SPEC.md` for product spec and decisions, `docs/ARCHITECTURE.md` for layering and channel details, `DESIGN.md` for settings UI design language and wireframes, `docs/specs/` for technical specs. Read ARCHITECTURE before changing any cross-process channel.
 
 ## Commands
@@ -26,7 +28,7 @@ bun run proof:f3|f4|f5|f6   # end-to-end proof scripts (lipsync / bridge / MCP /
 ```
 
 - There is no lint script. `build:electron` only runs a syntax check over `electron/` and `electron/settings/`.
-- Cubism Core (`renderer/public/live2dcubismcore.min.js`) and models are not in the repo. When missing, the window shows a guide instead of crashing; see README.
+- Cubism Core and models are not in the repo. Users import them (settings window or first-run wizard) into `~/.mayuka` (`MAYUKA_HOME` overrides; `MAYUKA_NO_LEGACY=1` disables the dev fallback to `renderer/public`). When missing, the avatar shows an empty-state card, not an error page.
 - The loopback bridge defaults to port 47832 and can be overridden with `LIVE2D_BRIDGE_PORT`. `.mcp.json` already points at `http://127.0.0.1:47832/mcp`.
 
 ## Architecture

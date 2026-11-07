@@ -10,10 +10,20 @@
 
 const { trayIconPath } = require('./icons.cjs')
 
-function buildTrayMenuTemplate({ showAvatar, hideAvatar, resetAvatar = () => {}, openSettings, quitApp }) {
+function buildTrayMenuTemplate(
+  { showAvatar, hideAvatar, resetAvatar = () => {}, openSettings, quitApp, activateModel = () => {}, openWizard = null },
+  { models = [], activeId = null, ready = true } = {},
+) {
+  // Model submenu (required on Linux, where there is no popover): radio items, current one checked.
+  const modelItems = models.length
+    ? models.map((m) => ({ label: m.name, type: 'radio', checked: m.id === activeId, click: () => activateModel(m.id) }))
+    : [{ label: '还没有模型', enabled: false }]
   return [
     { label: '显示角色窗', click: showAvatar },
     { label: '隐藏角色窗', click: hideAvatar },
+    { type: 'separator' },
+    { label: '切换模型', submenu: modelItems },
+    ...(!ready && typeof openWizard === 'function' ? [{ label: '设置向导…', click: openWizard }] : []),
     { type: 'separator' },
     { label: '重置窗口位置', click: resetAvatar },
     { type: 'separator' },
@@ -41,16 +51,25 @@ class TrayController {
     if (platform === 'darwin') icon.setTemplateImage(true)
     this._tray = new Tray(icon)
     this._tray.setToolTip('Mayuka')
-    const menu = Menu.buildFromTemplate(buildTrayMenuTemplate(actions))
+    this._Menu = Menu
+    this._actions = actions
+    this._clickMode = trayClickSupported(platform) && typeof actions.togglePopover === 'function'
+    this._menu = Menu.buildFromTemplate(buildTrayMenuTemplate(actions))
 
-    if (trayClickSupported(platform) && typeof actions.togglePopover === 'function') {
+    if (this._clickMode) {
       // 不 setContextMenu：macOS 上它会接管左键，弹窗就打不开了
       this._tray.on('click', (_event, bounds) => actions.togglePopover(bounds ?? this.getBounds()))
-      this._tray.on('right-click', () => this._tray.popUpContextMenu(menu))
+      this._tray.on('right-click', () => this._tray.popUpContextMenu(this._menu))
     } else {
-      this._tray.setContextMenu(menu)
+      this._tray.setContextMenu(this._menu)
       this._tray.on('click', actions.openSettings)
     }
+  }
+
+  /** Rebuild the context menu when the model list / readiness changes. */
+  rebuildMenu(state) {
+    this._menu = this._Menu.buildFromTemplate(buildTrayMenuTemplate(this._actions, state))
+    if (!this._clickMode) this._tray.setContextMenu(this._menu)
   }
 
   /** 托盘图标屏幕 bounds；平台不支持时返回 null */
